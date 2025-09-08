@@ -14,6 +14,7 @@ __pycache__/
 *.log
 *.tmp
 *.bak
+.gitignore
 fix_and_run.bat
 config_y2x_1.yaml
 config_x2y.yaml

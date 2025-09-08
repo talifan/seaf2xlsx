@@ -1,5 +1,0 @@
-yaml_dir: home_cinema_example
-out_xlsx_dir: out_xlsx_homecinema
-xlsx_files:
-  - regions_az_dc_offices.xlsx
-  - segments_nets_netdevices.xlsx
