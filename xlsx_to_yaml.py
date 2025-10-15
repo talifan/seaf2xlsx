@@ -39,6 +39,22 @@ def id_clean(s: Any) -> str | None:
     if s is None: return None
     return re.sub(r'\s+', '', s) or None
 
+def parse_multiline_ids(val) -> List[str]:
+    if val is None: return []
+    if isinstance(val, list):
+        return [t for x in val if (t := id_clean(x))]
+    text = str(val).replace('\r', '\n')
+    tokens: List[str] = []
+    for line in text.split('\n'):
+        segment = line.strip()
+        if not segment: continue
+        if segment.startswith('-'):
+            segment = segment[1:].strip()
+        for piece in re.split(r'[;,]', segment):
+            if cleaned := id_clean(piece):
+                tokens.append(cleaned)
+    return tokens
+
 def to_list(val) -> List[str]:
     if val is None: return []
     if isinstance(val, list):
@@ -66,7 +82,16 @@ class IndentedDumper(yaml.SafeDumper):
 def write_yaml(path: Path, data: Dict[str, Any]):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('w', encoding='utf-8') as f:
-        yaml.dump(data, f, Dumper=IndentedDumper, allow_unicode=True, sort_keys=False)
+        yaml.dump(sanitize_newlines(data), f, Dumper=IndentedDumper, allow_unicode=True, sort_keys=False)
+
+def sanitize_newlines(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: sanitize_newlines(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_newlines(v) for v in value]
+    if isinstance(value, str):
+        return re.sub(r'[\r\n]+', ' ', value)
+    return value
 
 # --- Helper Functions: End ---
 
@@ -82,7 +107,8 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
         'Офисы': 'office',
         'Сегменты': 'network_segment',
         'Сети': 'network',
-        'Сетевые устройства': 'components.network'
+        'Сетевые устройства': 'components.network',
+        'Сервисы КБ': 'kb'
     }
     for file_path in xlsx_files:
         if not file_path.exists():
@@ -215,6 +241,33 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path):
             devices[did] = entry
     write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
 
+def convert_kb_services(xlsx_path: Path, out_dir: Path):
+    xls = read_excel(xlsx_path)
+    if 'Сервисы КБ' not in xls.sheet_names:
+        return
+    df = non_empty_rows(xls.parse('Сервисы КБ'))
+    kb_services: Dict[str, Any] = {}
+    for _, row in df.iterrows():
+        raw_id = row.get('ID КБ сервиса')
+        svc_id = id_clean(raw_id)
+        if svc_id:
+            svc_id = svc_id.rstrip(':;,.')
+        if not svc_id:
+            continue
+        service: Dict[str, Any] = {}
+        if desc := ws_clean(row.get('Описание')): service['description'] = desc
+        if tag := ws_clean(row.get('Tag')): service['tag'] = tag
+        title = ws_clean(row.get('Название сервиса')) or ws_clean(row.get('Название')) or ws_clean(row.get('Технология'))
+        if title: service['title'] = title
+        if tech := ws_clean(row.get('Технология')): service['technology'] = tech
+        if sname := ws_clean(row.get('Название ПО')): service['software_name'] = sname
+        if status := ws_clean(row.get('Статус')): service['status'] = status
+        networks = parse_multiline_ids(row.get('Подключенные сети'))
+        if networks: service['network_connection'] = networks
+        kb_services[svc_id] = service
+    if kb_services:
+        write_yaml(out_dir / 'kb.yaml', {'seaf.ta.services.kb': kb_services})
+
 def write_root(out_dir: Path):
     imports = [p.name for p in sorted(out_dir.glob('*.yaml')) if p.name != 'root.yaml']
     write_yaml(out_dir / 'root.yaml', {'imports': imports})
@@ -236,6 +289,7 @@ def validate_refs(out_dir: Path) -> Dict[str, Any]:
         networks: Dict[str, Any] = {}
         for p in sorted(out_dir.glob('networks_*.yaml')):
             networks.update(load(p.name).get('seaf.ta.services.network', {}))
+        kb_services = load('kb.yaml').get('seaf.ta.services.kb', {})
         region_ids, az_ids, dc_ids, office_ids, seg_ids, net_ids = set(regions.keys()), set(azs.keys()), set(dcs.keys()), set(offices.keys()), set(segments.keys()), set(networks.keys())
         for i, d in azs.items():
             if (r := d.get('region')) and r not in region_ids: report['errors'].append(f'AZ {i} refs missing Region {r}')
@@ -250,6 +304,10 @@ def validate_refs(out_dir: Path) -> Dict[str, Any]:
                 if s not in seg_ids: report['errors'].append(f'Network {i} refs missing Segment {s}')
             for l in n.get('location') or []:
                 if l not in dc_ids and l not in office_ids: report['errors'].append(f'Network {i} has unknown location {l}')
+        for i, svc in kb_services.items():
+            for net in svc.get('network_connection') or []:
+                if net not in net_ids:
+                    report['errors'].append(f'KB service {i} refs missing Network {net}')
         for i, d in devices.items():
             if (s := d.get('segment')) and s not in seg_ids: report['errors'].append(f'Device {i} refs missing Segment {s}')
             for n in d.get('network_connection') or []:
@@ -265,6 +323,7 @@ def validate_enums(out_dir: Path, report: Dict[str, Any]) -> None:
         networks: Dict[str, Any] = {}
         for p in sorted(out_dir.glob('networks_*.yaml')):
             networks.update(load(p.name).get('seaf.ta.services.network', {}))
+        kb_services = load('kb.yaml').get('seaf.ta.services.kb', {})
         for i, n in networks.items():
             if (t := n.get('type')) and t not in ('LAN', 'WAN'): report['errors'].append(f'Network {i} has invalid type: {t}')
             if n.get('type') == 'LAN':
@@ -275,6 +334,10 @@ def validate_enums(out_dir: Path, report: Dict[str, Any]) -> None:
         for i, d in devices.items():
             if (rt := d.get('realization_type')) and rt not in realization_allowed: report['errors'].append(f'Device {i} has invalid realization_type: {rt}')
             if (dt := d.get('type')) and dt not in dev_type_allowed: report['errors'].append(f'Device {i} has invalid type: {dt}')
+        status_allowed = {'Используется', 'Создается', 'Не используется', 'Выводится'}
+        for i, svc in kb_services.items():
+            if (status := svc.get('status')) and status not in status_allowed:
+                report['warnings'].append(f'KB service {i} has unexpected status: {status}')
     except FileNotFoundError as e:
         pass # Errors are already handled by validate_refs
 
@@ -317,6 +380,9 @@ def main():
                 processed_something = True
             if any(sheet in xls.sheet_names for sheet in ['Сегменты', 'Сети', 'Сетевые устройства']):
                 convert_segments_nets_devices(xlsx_path, out_dir)
+                processed_something = True
+            if 'Сервисы КБ' in xls.sheet_names:
+                convert_kb_services(xlsx_path, out_dir)
                 processed_something = True
         except Exception as e:
             print(f"ERROR: Failed to process XLSX file {xlsx_path.name}: {e}", file=sys.stderr)

@@ -4,6 +4,8 @@ out_xlsx_final/
 out_yaml_roundtrip/
 out_xlsx_homecinema/
 out_yaml_homecinema/
+out_xlsx/
+out_yaml/
 
 # Example data directory (should not be committed)
 home_cinema_example/

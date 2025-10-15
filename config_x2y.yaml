@@ -1,4 +1,5 @@
 xlsx_files:
   - out_xlsx/regions_az_dc_offices.xlsx
   - out_xlsx/segments_nets_netdevices.xlsx
+  - template_kb_services_01.xlsx
 out_yaml_dir: out_yaml
