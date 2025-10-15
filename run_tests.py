@@ -85,13 +85,13 @@ def main():
 
     # --- Create Configs ---
     with open(YAML_TO_XLSX_CONFIG_1, 'w', encoding='utf-8') as f:
-        yaml.dump({'yaml_dir': str(YAML_SOURCE_DIR), 'out_xlsx_dir': str(XLSX_INITIAL_DIR), 'xlsx_files': ['regions_az_dc_offices.xlsx', 'segments_nets_netdevices.xlsx']}, f)
+        yaml.dump({'yaml_dir': str(YAML_SOURCE_DIR), 'out_xlsx_dir': str(XLSX_INITIAL_DIR), 'xlsx_files': ['regions_az_dc_offices.xlsx', 'segments_nets_netdevices.xlsx', 'kb_services.xlsx']}, f)
     
     with open(XLSX_TO_YAML_CONFIG, 'w', encoding='utf-8') as f:
-        yaml.dump({'xlsx_files': [str(XLSX_INITIAL_DIR / 'regions_az_dc_offices.xlsx'), str(XLSX_INITIAL_DIR / 'segments_nets_netdevices.xlsx')], 'out_yaml_dir': str(YAML_ROUNDTRIP_DIR)}, f)
+        yaml.dump({'xlsx_files': [str(XLSX_INITIAL_DIR / 'regions_az_dc_offices.xlsx'), str(XLSX_INITIAL_DIR / 'segments_nets_netdevices.xlsx'), str(XLSX_INITIAL_DIR / 'kb_services.xlsx')], 'out_yaml_dir': str(YAML_ROUNDTRIP_DIR)}, f)
 
     with open(YAML_TO_XLSX_CONFIG_2, 'w', encoding='utf-8') as f:
-        yaml.dump({'yaml_dir': str(YAML_ROUNDTRIP_DIR), 'out_xlsx_dir': str(XLSX_FINAL_DIR), 'xlsx_files': ['regions_az_dc_offices.xlsx', 'segments_nets_netdevices.xlsx']}, f)
+        yaml.dump({'yaml_dir': str(YAML_ROUNDTRIP_DIR), 'out_xlsx_dir': str(XLSX_FINAL_DIR), 'xlsx_files': ['regions_az_dc_offices.xlsx', 'segments_nets_netdevices.xlsx', 'kb_services.xlsx']}, f)
 
     # --- STEP 1: YAML -> XLSX (Initial) ---
     print("\n[Step 1/4] Converting source YAML to INITIAL XLSX...")

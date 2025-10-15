@@ -36,6 +36,7 @@ def count_entities_in_yaml_dir(yaml_dir: Path) -> Dict[str, int]:
         'seaf.ta.services.office',
         'seaf.ta.services.network_segment',
         'seaf.ta.services.network',
+        'seaf.ta.services.kb',
         'seaf.ta.components.network'
     }
 
@@ -57,7 +58,8 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
         'Офисы': 'office',
         'Сегменты': 'network_segment',
         'Сети': 'network',
-        'Сетевые устройства': 'components.network'
+        'Сетевые устройства': 'components.network',
+        'Сервисы КБ': 'kb'
     }
     for file_path in xlsx_files:
         if not file_path.exists():
@@ -114,6 +116,24 @@ def save_segments_nets_devices(yaml_dir: Path, out_xlsx: Path):
             dev_data.update(read_yaml(pth).get('seaf.ta.components.network', {}))
         pd.DataFrame([{'ID Устройства': _id, 'Наименование': p.get('title'), 'Тип реализации': p.get('realization_type'), 'Тип': p.get('type'), 'Модель': p.get('model'), 'Назначение': p.get('purpose'), 'IP адрес': p.get('address'), 'Описание': p.get('description'), 'Расположение (ID сегмента/зоны)': p.get('segment'), 'Подключенные сети (список)': ', '.join(p.get('network_connection') or [])} for _id, p in dev_data.items()]).to_excel(writer, sheet_name='Сетевые устройства', index=False)
 
+def save_kb_services(yaml_dir: Path, out_xlsx: Path):
+    with pd.ExcelWriter(out_xlsx, engine='openpyxl') as writer:
+        data = read_yaml(yaml_dir / 'kb.yaml').get('seaf.ta.services.kb', {})
+        rows = []
+        for _id, svc in data.items():
+            networks = svc.get('network_connection') or []
+            multiline = '\n'.join(f'- {net}' for net in networks)
+            rows.append({
+                'ID КБ сервиса': _id,
+                'Tag': svc.get('tag'),
+                'Описание': svc.get('description'),
+                'Технология': svc.get('technology'),
+                'Название ПО': svc.get('software_name'),
+                'Статус': svc.get('status'),
+                'Подключенные сети': multiline
+            })
+        pd.DataFrame(rows).to_excel(writer, sheet_name='Сервисы КБ', index=False)
+
 # --- Conversion Functions: End ---
 
 def main():
@@ -147,6 +167,7 @@ def main():
     out_files = [out_dir / f for f in cfg.get('xlsx_files', [])]
     reg_file = next((f for f in out_files if 'regions' in f.name), None)
     seg_file = next((f for f in out_files if 'segments' in f.name), None)
+    kb_file = next((f for f in out_files if 'kb' in f.stem.lower()), None)
 
     if reg_file:
         save_regions_az_dc_offices(yaml_dir, reg_file)
@@ -154,8 +175,11 @@ def main():
     if seg_file:
         save_segments_nets_devices(yaml_dir, seg_file)
         print(f"Saved segments, networks, and devices to {seg_file.name}")
+    if kb_file:
+        save_kb_services(yaml_dir, kb_file)
+        print(f"Saved KB services to {kb_file.name}")
 
-    if not reg_file and not seg_file:
+    if not reg_file and not seg_file and not kb_file:
         print("\nERROR: No output files specified in config under 'xlsx_files'. Nothing to do.", file=sys.stderr)
         sys.exit(1)
 
