@@ -224,8 +224,8 @@ def write_networks_per_location(nets: Dict[str, Any], out_dir: Path, company_pre
     if not company_prefix:
         print("WARN: No company prefix found, cannot generate location-specific network files correctly.", file=sys.stderr)
 
-    dc_pattern = re.compile(f'^{re.escape(company_prefix)}\\.dc\\.(\\d+)$')
-    office_pattern = re.compile(f'^{re.escape(company_prefix)}\\.office\\.(.+)$')
+    dc_pattern = re.compile(rf'{re.escape(company_prefix)}[.]dc[.](\d+)$')
+    office_pattern = re.compile(rf'{re.escape(company_prefix)}[.]office[.](.+)$')
 
     for nid, entry in nets.items():
         if not (locs := entry.get('location')):
