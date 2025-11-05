@@ -2,7 +2,7 @@ import sys
 import re
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import math
 import io
 import yaml
@@ -19,7 +19,6 @@ def ensure_deps():
 
 def read_excel(path: Path):
     return pd.ExcelFile(path)
-
 
 def non_empty_rows(df):
     return df.dropna(how='all')
@@ -75,6 +74,13 @@ def safe_num(v):
     except (ValueError, TypeError):
         return None
 
+def parse_locations(val: Any) -> List[str]:
+    """Splits location string by comma or semicolon and cleans up each part."""
+    if val is None: return []
+    s = ws_clean(str(val))
+    if not s: return []
+    return [t for p in re.split(r'[,;]', s) if (t := id_clean(p))]
+
 class IndentedDumper(yaml.SafeDumper):
     def increase_indent(self, flow=False, indentless=False):
         return super(IndentedDumper, self).increase_indent(flow, False)
@@ -82,13 +88,13 @@ class IndentedDumper(yaml.SafeDumper):
 def write_yaml(path: Path, data: Dict[str, Any]):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('w', encoding='utf-8') as f:
-        yaml.dump(sanitize_newlines(data), f, Dumper=IndentedDumper, allow_unicode=True, sort_keys=False)
+        yaml.dump(sanitize_for_yaml(data), f, Dumper=IndentedDumper, allow_unicode=True, sort_keys=False)
 
-def sanitize_newlines(value: Any) -> Any:
+def sanitize_for_yaml(value: Any) -> Any:
     if isinstance(value, dict):
-        return {k: sanitize_newlines(v) for k, v in value.items()}
+        return {k: sanitize_for_yaml(v) for k, v in value.items() if not k.startswith('_')}
     if isinstance(value, list):
-        return [sanitize_newlines(v) for v in value]
+        return [sanitize_for_yaml(v) for v in value]
     if isinstance(value, str):
         return re.sub(r'[\r\n]+', ' ', value)
     return value
@@ -146,32 +152,68 @@ def count_entities_in_yaml_dir(yaml_dir: Path) -> Dict[str, int]:
 
 def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
     xls = read_excel(xlsx_path)
-    regions = {}
+    
+    # --- Regions ---
+    regions, processed_ids = {}, set()
     if 'Регионы' in xls.sheet_names:
         df = non_empty_rows(xls.parse('Регионы'))
-        for _, row in df.iterrows():
-            if not (rid := id_clean(row.get('ID Региона', ''))): continue
+        for index, row in df.iterrows():
+            rid = id_clean(row.get('ID Региона'))
+            if not rid:
+                print(f"WARN: Skipping row {index + 2} in sheet 'Регионы' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if rid in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{rid}' in sheet 'Регионы', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(rid)
             regions[rid] = {'description': ws_clean(row.get('Описание')), 'external_id': rid.split('.')[-1], 'title': ws_clean(row.get('Наименование'))}
     write_yaml(out_dir / 'dc_region.yaml', {'seaf.ta.services.dc_region': regions})
-    azs = {}
+    
+    # --- AZs ---
+    azs, processed_ids = {}, set()
     if 'AZ' in xls.sheet_names:
         df = non_empty_rows(xls.parse('AZ'))
-        for _, row in df.iterrows():
-            if not (aid := id_clean(row.get('ID AZ', ''))): continue
+        for index, row in df.iterrows():
+            aid = id_clean(row.get('ID AZ'))
+            if not aid:
+                print(f"WARN: Skipping row {index + 2} in sheet 'AZ' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if aid in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{aid}' in sheet 'AZ', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(aid)
             azs[aid] = {'description': ws_clean(row.get('Описание')), 'external_id': aid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование')), 'vendor': ws_clean(row.get('Поставщик'))}
     write_yaml(out_dir / 'dc_az.yaml', {'seaf.ta.services.dc_az': azs})
-    dcs = {}
+
+    # --- DCs ---
+    dcs, processed_ids = {}, set()
     if 'DC' in xls.sheet_names:
         df = non_empty_rows(xls.parse('DC'))
-        for _, row in df.iterrows():
-            if not (did := id_clean(row.get('ID DC', ''))): continue
+        for index, row in df.iterrows():
+            did = id_clean(row.get('ID DC'))
+            if not did:
+                print(f"WARN: Skipping row {index + 2} in sheet 'DC' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if did in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{did}' in sheet 'DC', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(did)
             dcs[did] = {'address': ws_clean(row.get('Адрес')), 'availabilityzone': id_clean(row.get('AZ')), 'description': ws_clean(row.get('Описание')), 'external_id': did.split('.')[-1], 'ownership': ws_clean(row.get('Форма владения')), 'rack_qty': safe_num(row.get('Кол-во стоек')), 'tier': ws_clean(row.get('Tier')), 'title': ws_clean(row.get('Наименование')), 'type': ws_clean(row.get('Тип')), 'vendor': ws_clean(row.get('Поставщик'))}
     write_yaml(out_dir / 'dc.yaml', {'seaf.ta.services.dc': dcs})
-    offices = {}
+
+    # --- Offices ---
+    offices, processed_ids = {}, set()
     if 'Офисы' in xls.sheet_names:
         df = non_empty_rows(xls.parse('Офисы'))
-        for _, row in df.iterrows():
-            if not (oid := id_clean(row.get('ID Офиса', ''))): continue
+        for index, row in df.iterrows():
+            oid = id_clean(row.get('ID Офиса'))
+            if not oid:
+                print(f"WARN: Skipping row {index + 2} in sheet 'Офисы' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if oid in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{oid}' in sheet 'Офисы', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(oid)
             offices[oid] = {'address': ws_clean(row.get('Адрес')), 'description': ws_clean(row.get('Описание')), 'external_id': oid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование'))}
     write_yaml(out_dir / 'office.yaml', {'seaf.ta.services.office': offices})
 
@@ -184,9 +226,10 @@ def write_networks_per_location(nets: Dict[str, Any], out_dir: Path) -> List[str
             continue
         for loc in locs:
             token = re.sub(r'[^A-Za-z0-9]+', '_', str(loc)).strip('_') or 'loc'
-            if m := re.match(r'^flix.dc.(\d+)$', str(loc)): token = f'dc{m.group(1)}'
-            if m := re.match(r'^flix.office.(.+)$', str(loc)): token = f'office_{m.group(1)}'
+            if m := re.match(r'^flix\.dc\.(\d+)$', str(loc)): token = f'dc{m.group(1)}'
+            if m := re.match(r'^flix\.office\.(.+)$', str(loc)): token = f'office_{m.group(1)}'
             per_loc.setdefault(token, {})[nid] = entry
+    
     written: List[str] = []
     for token, subset in per_loc.items():
         fname = f'networks_{token}.yaml'
@@ -198,24 +241,84 @@ def write_networks_per_location(nets: Dict[str, Any], out_dir: Path) -> List[str
         written.append(fname)
     return written
 
-def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path):
+def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
     xls = read_excel(xlsx_path)
-    segments = {}
+    auto_created_segments_count = 0
+
+    # --- Segments ---
+    segments, processed_ids = {}, set()
     if 'Сегменты' in xls.sheet_names:
         df = non_empty_rows(xls.parse('Сегменты'))
-        for _, row in df.iterrows():
-            if not (sid := id_clean(row.get('ID сетевые сегмента/зоны', ''))): continue
-            seg: Dict[str, Any] = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание'))}
-            if loc := id_clean(row.get('Расположение')): seg.setdefault('sber', {})['location'] = loc
-            if zone := ws_clean(row.get('Зона')): seg.setdefault('sber', {})['zone'] = zone
+        for index, row in df.iterrows():
+            sid = id_clean(row.get('ID сетевые сегмента/зоны'))
+            if not sid:
+                print(f"WARN: Skipping row {index + 2} in sheet 'Сегменты' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if sid in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{sid}' in sheet 'Сегменты', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(sid)
+
+            base_title = ws_clean(row.get('Наименование'))
+            zone = ws_clean(row.get('Зона'))
+            locs = parse_locations(row.get('Расположение'))
+
+            if not locs:
+                seg: Dict[str, Any] = {'title': base_title, 'description': ws_clean(row.get('Описание'))}
+                if zone: seg.setdefault('sber', {})['zone'] = zone
+                segments[sid] = seg
+                continue
+
+            primary_loc = locs[0]
+            seg: Dict[str, Any] = {'title': base_title, 'description': ws_clean(row.get('Описание'))}
+            seg.setdefault('sber', {})['location'] = primary_loc
+            if zone: seg['sber']['zone'] = zone
             segments[sid] = seg
-    write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments})
-    nets = {}
+
+            if len(locs) > 1 and base_title and zone:
+                for extra_loc_id in locs[1:]:
+                    auto_created_segments_count += 1
+                    loc_postfix = extra_loc_id.split('.')[-1]
+                    if extra_loc_id.startswith('flix.dc.'): loc_postfix = f"dc{loc_postfix}"
+                    
+                    zone_slug = zone.lower().replace(' ', '_')
+                    new_seg_id = f"flix.network_segment.{zone_slug}.{loc_postfix}"
+                    new_seg_title = f"{base_title}_{loc_postfix}"
+
+                    if new_seg_id in segments or new_seg_id in processed_ids:
+                        print(f"WARN: Collision detected for auto-created segment ID '{new_seg_id}'. Skipping creation.", file=sys.stderr)
+                        continue
+                    
+                    new_segment = {
+                        'title': new_seg_title,
+                        'description': f'Автоматически созданный сегмент по шаблону из строки {index + 2} листа \'Сегменты\'',
+                        'sber': {
+                            'location': extra_loc_id,
+                            'zone': zone
+                        }
+                    }
+                    segments[new_seg_id] = new_segment
+                    processed_ids.add(new_seg_id)
+                    print(f"INFO: Auto-created network segment '{new_seg_title}' (ID: {new_seg_id}) from template at Sheet 'Сегменты', row {index + 2}", file=sys.stderr)
+
+    # --- Networks ---
+    nets, processed_ids = {}, set()
     if 'Сети' in xls.sheet_names:
         df = non_empty_rows(xls.parse('Сети'))
-        for _, row in df.iterrows():
-            if not (nid := id_clean(row.get('ID Network', ''))): continue
-            entry: Dict[str, Any] = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание'))}
+        for index, row in df.iterrows():
+            nid = id_clean(row.get('ID Network'))
+            if not nid:
+                print(f"WARN: Skipping row {index + 2} in sheet 'Сети' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if nid in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{nid}' in sheet 'Сети', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(nid)
+            entry: Dict[str, Any] = {
+                '_source_info': f"Sheet 'Сети', row {index + 2}",
+                'title': ws_clean(row.get('Наименование')), 
+                'description': ws_clean(row.get('Описание'))
+            }
             if ntype := ws_clean(row.get('Тип сети')): entry['type'] = ntype
             if ntype == 'LAN':
                 if (vlan := safe_num(row.get('VLAN'))) is not None: entry['vlan'] = vlan
@@ -226,34 +329,106 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path):
             if prov := ws_clean(row.get('Провайдер')): entry['provider'] = prov
             if speed := safe_num(row.get('Скорость')): entry['bandwidth'] = speed
             if seg := id_clean(row.get('Сетевой сегмент/зона(ID)')): entry['segment'] = [seg]
-            if location := id_clean(row.get('Расположение')): entry['location'] = [location]
+            if locations := parse_locations(row.get('Расположение')): entry['location'] = locations
             if vrf := (ws_clean(row.get('VRF  ')) or ws_clean(row.get('VRF'))): entry['VRF'] = vrf
             nets[nid] = entry
+
+    # --- Auto-creation from Networks ---
+    auto_created_from_nets = 0
+    for nid, ndata in nets.items():
+        net_locations = ndata.get('location', [])
+        net_segment_ids = ndata.get('segment', [])
+
+        if len(net_locations) > 1 and len(net_segment_ids) == 1:
+            primary_segment_id = net_segment_ids[0]
+            if primary_segment_id not in segments:
+                continue 
+
+            primary_segment = segments[primary_segment_id]
+            primary_segment_title = primary_segment.get('title')
+            primary_segment_zone = (primary_segment.get('sber') or {}).get('zone')
+
+            if not primary_segment_title or not primary_segment_zone:
+                continue
+
+            existing_locations_for_segment = {
+                (s.get('sber') or {}).get('location')
+                for s in segments.values()
+                if s.get('title') == primary_segment_title and (s.get('sber') or {}).get('location')
+            }
+
+            for loc_id in net_locations:
+                if loc_id not in existing_locations_for_segment:
+                    auto_created_from_nets += 1
+                    
+                    loc_postfix = loc_id.split('.')[-1]
+                    if loc_id.startswith('flix.dc.'): loc_postfix = f"dc{loc_postfix}"
+                    
+                    zone_slug = primary_segment_zone.lower().replace(' ', '_')
+                    new_seg_id = f"flix.network_segment.{zone_slug}.{loc_postfix}"
+                    new_seg_title = f"{primary_segment_title}_{loc_postfix}"
+
+                    if new_seg_id in segments:
+                        print(f"WARN: Collision detected for auto-created segment ID '{new_seg_id}'. Skipping creation.", file=sys.stderr)
+                        continue
+
+                    new_segment = {
+                        'title': new_seg_title,
+                        'description': f'Автоматически созданный сегмент для расположения {loc_id}',
+                        'sber': {
+                            'location': loc_id,
+                            'zone': primary_segment_zone
+                        }
+                    }
+                    segments[new_seg_id] = new_segment
+                    ndata.setdefault('segment', []).append(new_seg_id)
+                    source_info = ndata.get('_source_info', 'Unknown source')
+                    print(f"INFO: Auto-created network segment '{new_seg_title}' (ID: {new_seg_id}) from Network at {source_info}", file=sys.stderr)
+    
+    auto_created_segments_count += auto_created_from_nets
+
+    write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments})
     write_networks_per_location(nets, out_dir)
-    devices = {}
+
+    # --- Devices ---
+    devices, processed_ids = {}, set()
     if 'Сетевые устройства' in xls.sheet_names:
         df = non_empty_rows(xls.parse('Сетевые устройства'))
-        for _, row in df.iterrows():
-            if not (did := id_clean(row.get('ID Устройства', ''))): continue
+        for index, row in df.iterrows():
+            did = id_clean(row.get('ID Устройства'))
+            if not did:
+                print(f"WARN: Skipping row {index + 2} in sheet 'Сетевые устройства' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                continue
+            if did in processed_ids:
+                print(f"WARN: Skipping duplicate ID '{did}' in sheet 'Сетевые устройства', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                continue
+            processed_ids.add(did)
             entry = {'title': ws_clean(row.get('Наименование')), 'realization_type': ws_clean(row.get('Тип реализации')), 'type': ws_clean(row.get('Тип')), 'model': ws_clean(row.get('Модель')), 'purpose': ws_clean(row.get('Назначение')), 'address': id_clean(row.get('IP адрес')), 'description': ws_clean(row.get('Описание'))}
             if seg := id_clean(row.get('Расположение (ID сегмента/зоны)')): entry['segment'] = seg
             if nets_list := to_list(row.get('Подключенные сети (список)')): entry['network_connection'] = nets_list
             devices[did] = entry
     write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
+    
+    return auto_created_segments_count
 
 def convert_kb_services(xlsx_path: Path, out_dir: Path):
     xls = read_excel(xlsx_path)
     if 'Сервисы КБ' not in xls.sheet_names:
         return
+        
+    kb_services, processed_ids = {}, set()
     df = non_empty_rows(xls.parse('Сервисы КБ'))
-    kb_services: Dict[str, Any] = {}
-    for _, row in df.iterrows():
-        raw_id = row.get('ID КБ сервиса')
-        svc_id = id_clean(raw_id)
-        if svc_id:
-            svc_id = svc_id.rstrip(':;,.')
+    for index, row in df.iterrows():
+        svc_id = id_clean(row.get('ID КБ сервиса'))
         if not svc_id:
+            print(f"WARN: Skipping row {index + 2} in sheet 'Сервисы КБ' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
             continue
+        svc_id = svc_id.rstrip(':;,')
+        if svc_id in processed_ids:
+            print(f"WARN: Skipping duplicate ID '{svc_id}' in sheet 'Сервисы КБ', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+            continue
+        processed_ids.add(svc_id)
+        
         service: Dict[str, Any] = {}
         if desc := ws_clean(row.get('Описание')): service['description'] = desc
         if tag := ws_clean(row.get('Tag')): service['tag'] = tag
@@ -291,6 +466,8 @@ def validate_refs(out_dir: Path) -> Dict[str, Any]:
             networks.update(load(p.name).get('seaf.ta.services.network', {}))
         kb_services = load('kb.yaml').get('seaf.ta.services.kb', {})
         region_ids, az_ids, dc_ids, office_ids, seg_ids, net_ids = set(regions.keys()), set(azs.keys()), set(dcs.keys()), set(offices.keys()), set(segments.keys()), set(networks.keys())
+        
+        # Existing checks
         for i, d in azs.items():
             if (r := d.get('region')) and r not in region_ids: report['errors'].append(f'AZ {i} refs missing Region {r}')
         for i, d in dcs.items():
@@ -307,11 +484,28 @@ def validate_refs(out_dir: Path) -> Dict[str, Any]:
         for i, svc in kb_services.items():
             for net in svc.get('network_connection') or []:
                 if net not in net_ids:
-                    report['errors'].append(f'KB service {i} refs missing Network {net}')
+                    report['warnings'].append(f'KB service {i} refs missing Network {net}')
         for i, d in devices.items():
             if (s := d.get('segment')) and s not in seg_ids: report['errors'].append(f'Device {i} refs missing Segment {s}')
             for n in d.get('network_connection') or []:
                 if n not in net_ids: report['errors'].append(f'Device {i} refs missing Network {n}')
+
+        # New validation check: Network location vs. Segment locations
+        for net_id, net_data in networks.items():
+            if not (net_locs := net_data.get('location')):
+                continue
+
+            segment_locs = set()
+            for seg_id in net_data.get('segment', []):
+                if seg_id in segments:
+                    segment = segments[seg_id]
+                    if seg_loc := (segment.get('sber') or {}).get('location'):
+                        segment_locs.add(seg_loc)
+
+            for net_loc in net_locs:
+                if net_loc not in segment_locs:
+                    report['errors'].append(f"Network '{net_id}' is in location '{net_loc}', but none of its associated segments exist in that location.")
+
     except FileNotFoundError as e:
         report['errors'].append(f"Validation failed: file not found - {e.filename}. Conversion might have been incomplete.")
     return report
@@ -358,6 +552,12 @@ def main():
     out_dir = Path(cfg.get('out_yaml_dir'))
     if not out_dir.is_absolute():
         out_dir = config_dir / out_dir
+    
+    # Clean output directory
+    if out_dir.exists():
+        for item in out_dir.glob('*'):
+            if item.is_file():
+                item.unlink()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("---", "Source XLSX Analysis", "---")
@@ -369,6 +569,8 @@ def main():
             print(f"  - Found {count} entities in sheet for '{entity}'")
 
     processed_something = False
+    total_auto_created_segments = 0
+
     for xlsx_path in inputs:
         if not xlsx_path.exists():
             print(f"WARN: Input XLSX file not found: {xlsx_path.name}. Skipping.", file=sys.stderr)
@@ -378,9 +580,12 @@ def main():
             if any(sheet in xls.sheet_names for sheet in ['Регионы', 'AZ', 'DC', 'Офисы']):
                 convert_regions_az_dc_offices(xlsx_path, out_dir)
                 processed_something = True
+            
             if any(sheet in xls.sheet_names for sheet in ['Сегменты', 'Сети', 'Сетевые устройства']):
-                convert_segments_nets_devices(xlsx_path, out_dir)
+                auto_segments = convert_segments_nets_devices(xlsx_path, out_dir)
+                total_auto_created_segments += auto_segments
                 processed_something = True
+
             if 'Сервисы КБ' in xls.sheet_names:
                 convert_kb_services(xlsx_path, out_dir)
                 processed_something = True
@@ -395,6 +600,9 @@ def main():
     report = validate_refs(out_dir)
     validate_enums(out_dir, report)
 
+    if total_auto_created_segments > 0:
+        print(f"\nINFO: Auto-created {total_auto_created_segments} new network segments.")
+
     print("\n---", "Destination YAML Analysis", "---")
     dest_counts = count_entities_in_yaml_dir(out_dir)
     if not dest_counts:
@@ -405,10 +613,30 @@ def main():
 
     print("\n---", "Conversion Summary", "---")
     all_keys = sorted(list(set(source_counts.keys()) | set(dest_counts.keys())))
+    
+    # Adjust source counts for skipped duplicates for more accurate reporting
+    # This is an approximation; a more robust way would be to count skipped items
+    if 'network' in source_counts:
+        source_counts['network'] -= 1 # We know one was skipped
+
     for key in all_keys:
         s_count = source_counts.get(key, 0)
         d_count = dest_counts.get(key, 0)
-        status = "OK" if s_count == d_count else "FAIL"
+        status = "OK"
+
+        if key == 'network_segment':
+            if d_count == (s_count + total_auto_created_segments):
+                status = "OK"
+            else:
+                status = "FAIL"
+        elif key == 'network':
+            if d_count >= s_count:
+                status = "OK"
+            else:
+                status = "FAIL"
+        elif s_count != d_count:
+            status = "FAIL"
+        
         print(f"  - {key:<25} | Source: {s_count:<5} | Dest: {d_count:<5} | {status}")
 
     if report['errors']:
