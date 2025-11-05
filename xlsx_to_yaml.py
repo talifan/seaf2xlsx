@@ -217,17 +217,25 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
             offices[oid] = {'address': ws_clean(row.get('Адрес')), 'description': ws_clean(row.get('Описание')), 'external_id': oid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование'))}
     write_yaml(out_dir / 'office.yaml', {'seaf.ta.services.office': offices})
 
-def write_networks_per_location(nets: Dict[str, Any], out_dir: Path) -> List[str]:
+def write_networks_per_location(nets: Dict[str, Any], out_dir: Path, company_prefix: str):
     per_loc: Dict[str, Dict[str, Any]] = {}
     misc: Dict[str, Any] = {}
+    
+    if not company_prefix:
+        print("WARN: No company prefix found, cannot generate location-specific network files correctly.", file=sys.stderr)
+
+    dc_pattern = re.compile(f'^{re.escape(company_prefix)}\\.dc\\.(\\d+)$')
+    office_pattern = re.compile(f'^{re.escape(company_prefix)}\\.office\\.(.+)$')
+
     for nid, entry in nets.items():
         if not (locs := entry.get('location')):
             misc[nid] = entry
             continue
         for loc in locs:
             token = re.sub(r'[^A-Za-z0-9]+', '_', str(loc)).strip('_') or 'loc'
-            if m := re.match(r'^flix\.dc\.(\d+)$', str(loc)): token = f'dc{m.group(1)}'
-            if m := re.match(r'^flix\.office\.(.+)$', str(loc)): token = f'office_{m.group(1)}'
+            if company_prefix:
+                if m := dc_pattern.match(str(loc)): token = f'dc{m.group(1)}'
+                if m := office_pattern.match(str(loc)): token = f'office_{m.group(1)}'
             per_loc.setdefault(token, {})[nid] = entry
     
     written: List[str] = []
@@ -276,13 +284,15 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             segments[sid] = seg
 
             if len(locs) > 1 and base_title and zone:
+                company_prefix = sid.split('.')[0] if '.' in sid else ''
                 for extra_loc_id in locs[1:]:
                     auto_created_segments_count += 1
                     loc_postfix = extra_loc_id.split('.')[-1]
-                    if extra_loc_id.startswith('flix.dc.'): loc_postfix = f"dc{loc_postfix}"
+                    if extra_loc_id.startswith(f'{company_prefix}.dc.'):
+                        loc_postfix = f"dc{loc_postfix}"
                     
                     zone_slug = zone.lower().replace(' ', '_')
-                    new_seg_id = f"flix.network_segment.{zone_slug}.{loc_postfix}"
+                    new_seg_id = f"{company_prefix}.network_segment.{zone_slug}.{loc_postfix}"
                     new_seg_title = f"{base_title}_{loc_postfix}"
 
                     if new_seg_id in segments or new_seg_id in processed_ids:
@@ -291,7 +301,7 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                     
                     new_segment = {
                         'title': new_seg_title,
-                        'description': f'Автоматически созданный сегмент по шаблону из строки {index + 2} листа \'Сегменты\'',
+                        'description': f'Автоматически созданный сегмент по шаблону из строки {index + 2} листа \'Сегменты\'' ,
                         'sber': {
                             'location': extra_loc_id,
                             'zone': zone
@@ -357,15 +367,17 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                 if s.get('title') == primary_segment_title and (s.get('sber') or {}).get('location')
             }
 
+            company_prefix = nid.split('.')[0] if '.' in nid else ''
             for loc_id in net_locations:
                 if loc_id not in existing_locations_for_segment:
                     auto_created_from_nets += 1
                     
                     loc_postfix = loc_id.split('.')[-1]
-                    if loc_id.startswith('flix.dc.'): loc_postfix = f"dc{loc_postfix}"
+                    if loc_id.startswith(f'{company_prefix}.dc.'):
+                        loc_postfix = f"dc{loc_postfix}"
                     
                     zone_slug = primary_segment_zone.lower().replace(' ', '_')
-                    new_seg_id = f"flix.network_segment.{zone_slug}.{loc_postfix}"
+                    new_seg_id = f"{company_prefix}.network_segment.{zone_slug}.{loc_postfix}"
                     new_seg_title = f"{primary_segment_title}_{loc_postfix}"
 
                     if new_seg_id in segments:
@@ -387,8 +399,14 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
     
     auto_created_segments_count += auto_created_from_nets
 
+    company_prefix_for_files = ''
+    if nets:
+        first_net_id = next(iter(nets.keys()))
+        if '.' in first_net_id:
+            company_prefix_for_files = first_net_id.split('.')[0]
+
     write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments})
-    write_networks_per_location(nets, out_dir)
+    write_networks_per_location(nets, out_dir, company_prefix_for_files)
 
     # --- Devices ---
     devices, processed_ids = {}, set()
