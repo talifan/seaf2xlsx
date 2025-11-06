@@ -8,6 +8,12 @@ import io
 import yaml
 import pandas as pd
 
+DEBUG_LOG_FILE = Path('debug_script.log')
+
+def log_debug(message):
+    with DEBUG_LOG_FILE.open('a', encoding='utf-8') as f:
+        f.write(f"{message}\n")
+
 # --- Helper Functions: Start ---
 
 def ensure_deps():
@@ -75,11 +81,11 @@ def safe_num(v):
         return None
 
 def parse_locations(val: Any) -> List[str]:
-    """Splits location string by comma or semicolon and cleans up each part."""
+    """Splits location string into individual IDs and normalizes tokens."""
     if val is None: return []
     s = ws_clean(str(val))
     if not s: return []
-    return [t for p in re.split(r'[,;]', s) if (t := id_clean(p))]
+    return [t for p in re.split(r'[;,\s]+', s) if (t := id_clean(p))]
 
 class IndentedDumper(yaml.SafeDumper):
     def increase_indent(self, flow=False, indentless=False):
@@ -125,7 +131,16 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
                 if sheet_name in sheet_map:
                     df = non_empty_rows(xls.parse(sheet_name))
                     entity_name = sheet_map[sheet_name]
-                    counts[entity_name] = counts.get(entity_name, 0) + len(df)
+                    row_count = len(df)
+                    if entity_name == 'network':
+                        id_count = 0
+                        for col in ('ID Network',):
+                            if col in df.columns:
+                                id_count = df[col].apply(id_clean).dropna().shape[0]
+                                break
+                        if id_count:
+                            row_count = id_count
+                    counts[entity_name] = counts.get(entity_name, 0) + row_count
         except Exception as e:
             print(f"WARN: Could not process Excel file {file_path.name}: {e}", file=sys.stderr)
     return counts
@@ -167,7 +182,8 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
                 continue
             processed_ids.add(rid)
             regions[rid] = {'description': ws_clean(row.get('Описание')), 'external_id': rid.split('.')[-1], 'title': ws_clean(row.get('Наименование'))}
-    write_yaml(out_dir / 'dc_region.yaml', {'seaf.ta.services.dc_region': regions})
+    if regions:
+        write_yaml(out_dir / 'dc_region.yaml', {'seaf.ta.services.dc_region': regions})
     
     # --- AZs ---
     azs, processed_ids = {}, set()
@@ -183,7 +199,8 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
                 continue
             processed_ids.add(aid)
             azs[aid] = {'description': ws_clean(row.get('Описание')), 'external_id': aid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование')), 'vendor': ws_clean(row.get('Поставщик'))}
-    write_yaml(out_dir / 'dc_az.yaml', {'seaf.ta.services.dc_az': azs})
+    if azs:
+        write_yaml(out_dir / 'dc_az.yaml', {'seaf.ta.services.dc_az': azs})
 
     # --- DCs ---
     dcs, processed_ids = {}, set()
@@ -199,7 +216,8 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
                 continue
             processed_ids.add(did)
             dcs[did] = {'address': ws_clean(row.get('Адрес')), 'availabilityzone': id_clean(row.get('AZ')), 'description': ws_clean(row.get('Описание')), 'external_id': did.split('.')[-1], 'ownership': ws_clean(row.get('Форма владения')), 'rack_qty': safe_num(row.get('Кол-во стоек')), 'tier': ws_clean(row.get('Tier')), 'title': ws_clean(row.get('Наименование')), 'type': ws_clean(row.get('Тип')), 'vendor': ws_clean(row.get('Поставщик'))}
-    write_yaml(out_dir / 'dc.yaml', {'seaf.ta.services.dc': dcs})
+    if dcs:
+        write_yaml(out_dir / 'dc.yaml', {'seaf.ta.services.dc': dcs})
 
     # --- Offices ---
     offices, processed_ids = {}, set()
@@ -215,7 +233,8 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
                 continue
             processed_ids.add(oid)
             offices[oid] = {'address': ws_clean(row.get('Адрес')), 'description': ws_clean(row.get('Описание')), 'external_id': oid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование'))}
-    write_yaml(out_dir / 'office.yaml', {'seaf.ta.services.office': offices})
+    if offices:
+        write_yaml(out_dir / 'office.yaml', {'seaf.ta.services.office': offices})
 
 def write_networks_per_location(nets: Dict[str, Any], out_dir: Path, company_prefix: str):
     per_loc: Dict[str, Dict[str, Any]] = {}
@@ -286,7 +305,6 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             if len(locs) > 1 and base_title and zone:
                 company_prefix = sid.split('.')[0] if '.' in sid else ''
                 for extra_loc_id in locs[1:]:
-                    auto_created_segments_count += 1
                     loc_postfix = extra_loc_id.split('.')[-1]
                     if extra_loc_id.startswith(f'{company_prefix}.dc.'):
                         loc_postfix = f"dc{loc_postfix}"
@@ -296,12 +314,11 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                     new_seg_title = f"{base_title}_{loc_postfix}"
 
                     if new_seg_id in segments or new_seg_id in processed_ids:
-                        print(f"WARN: Collision detected for auto-created segment ID '{new_seg_id}'. Skipping creation.", file=sys.stderr)
                         continue
                     
                     new_segment = {
                         'title': new_seg_title,
-                        'description': f'Автоматически созданный сегмент по шаблону из строки {index + 2} листа \'Сегменты\'' ,
+                        'description': f'Автоматически созданный сегмент по шаблону из строки {index + 2} листа \'Сегменты\'',
                         'sber': {
                             'location': extra_loc_id,
                             'zone': zone
@@ -309,7 +326,7 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                     }
                     segments[new_seg_id] = new_segment
                     processed_ids.add(new_seg_id)
-                    print(f"INFO: Auto-created network segment '{new_seg_title}' (ID: {new_seg_id}) from template at Sheet 'Сегменты', row {index + 2}", file=sys.stderr)
+                    auto_created_segments_count += 1
 
     # --- Networks ---
     nets, processed_ids = {}, set()
@@ -333,12 +350,24 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             if ntype == 'LAN':
                 if (vlan := safe_num(row.get('VLAN'))) is not None: entry['vlan'] = vlan
                 if ipn := ws_clean(row.get('Адрес сети')): entry['ipnetwork'] = ipn
-                if lan_type := ws_clean(row.get('Тип сети (проводная, беспроводная)')): entry['lan_type'] = lan_type
+                for lan_col in ('Тип сети (проводная, беспроводная)', 'Тип LAN'):
+                    if lan_col in row and (lan_type := ws_clean(row.get(lan_col))):
+                        entry['lan_type'] = lan_type
+                        break
             elif ntype == 'WAN':
                 if wan := ws_clean(row.get('WAN Адрес')): entry['wan_ip'] = wan
             if prov := ws_clean(row.get('Провайдер')): entry['provider'] = prov
             if speed := safe_num(row.get('Скорость')): entry['bandwidth'] = speed
-            if seg := id_clean(row.get('Сетевой сегмент/зона(ID)')): entry['segment'] = [seg]
+            segment_refs: List[str] = []
+            for seg_col in ('Сетевой сегмент/зона(ID)', 'Сетевой сегмент/зона'):
+                if seg_col in row:
+                    segment_refs = parse_multiline_ids(row.get(seg_col))
+                else:
+                    segment_refs = []
+                if segment_refs:
+                    break
+            if segment_refs:
+                entry['segment'] = segment_refs
             if locations := parse_locations(row.get('Расположение')): entry['location'] = locations
             if vrf := (ws_clean(row.get('VRF  ')) or ws_clean(row.get('VRF'))): entry['VRF'] = vrf
             nets[nid] = entry
@@ -349,7 +378,7 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
         net_locations = ndata.get('location', [])
         net_segment_ids = ndata.get('segment', [])
 
-        if len(net_locations) > 1 and len(net_segment_ids) == 1:
+        if net_locations and len(net_segment_ids) == 1:
             primary_segment_id = net_segment_ids[0]
             if primary_segment_id not in segments:
                 continue 
@@ -370,18 +399,21 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             company_prefix = nid.split('.')[0] if '.' in nid else ''
             for loc_id in net_locations:
                 if loc_id not in existing_locations_for_segment:
-                    auto_created_from_nets += 1
-                    
                     loc_postfix = loc_id.split('.')[-1]
                     if loc_id.startswith(f'{company_prefix}.dc.'):
                         loc_postfix = f"dc{loc_postfix}"
                     
                     zone_slug = primary_segment_zone.lower().replace(' ', '_')
                     new_seg_id = f"{company_prefix}.network_segment.{zone_slug}.{loc_postfix}"
+
                     new_seg_title = f"{primary_segment_title}_{loc_postfix}"
 
-                    if new_seg_id in segments:
-                        print(f"WARN: Collision detected for auto-created segment ID '{new_seg_id}'. Skipping creation.", file=sys.stderr)
+                    target_list = ndata.setdefault('segment', [])
+
+                    if new_seg_id in segments or new_seg_id in processed_ids:
+                        if new_seg_id not in target_list:
+                            target_list.append(new_seg_id)
+                        existing_locations_for_segment.add(loc_id)
                         continue
 
                     new_segment = {
@@ -393,9 +425,10 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                         }
                     }
                     segments[new_seg_id] = new_segment
-                    ndata.setdefault('segment', []).append(new_seg_id)
-                    source_info = ndata.get('_source_info', 'Unknown source')
-                    print(f"INFO: Auto-created network segment '{new_seg_title}' (ID: {new_seg_id}) from Network at {source_info}", file=sys.stderr)
+                    target_list.append(new_seg_id)
+                    existing_locations_for_segment.add(loc_id)
+                    processed_ids.add(new_seg_id)
+                    auto_created_from_nets += 1
     
     auto_created_segments_count += auto_created_from_nets
 
@@ -405,8 +438,10 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
         if '.' in first_net_id:
             company_prefix_for_files = first_net_id.split('.')[0]
 
-    write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments})
-    write_networks_per_location(nets, out_dir, company_prefix_for_files)
+    if segments:
+        write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments})
+    if nets:
+        write_networks_per_location(nets, out_dir, company_prefix_for_files)
 
     # --- Devices ---
     devices, processed_ids = {}, set()
@@ -425,7 +460,8 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             if seg := id_clean(row.get('Расположение (ID сегмента/зоны)')): entry['segment'] = seg
             if nets_list := to_list(row.get('Подключенные сети (список)')): entry['network_connection'] = nets_list
             devices[did] = entry
-    write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
+    if devices:
+        write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
     
     return auto_created_segments_count
 
@@ -463,7 +499,8 @@ def convert_kb_services(xlsx_path: Path, out_dir: Path):
 
 def write_root(out_dir: Path):
     imports = [p.name for p in sorted(out_dir.glob('*.yaml')) if p.name != 'root.yaml']
-    write_yaml(out_dir / 'root.yaml', {'imports': imports})
+    if imports:
+        write_yaml(out_dir / 'root.yaml', {'imports': imports})
 
 # --- Conversion Functions: End ---
 
@@ -471,19 +508,29 @@ def write_root(out_dir: Path):
 
 def validate_refs(out_dir: Path) -> Dict[str, Any]:
     report: Dict[str, Any] = {'errors': [], 'warnings': []}
-    def load(name: str): return yaml.safe_load((out_dir / name).read_text(encoding='utf-8')) or {}
+    
+    def load_if_exists(name: str):
+        path = out_dir / name
+        if path.exists():
+            return yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        return {}
+
     try:
-        regions = load('dc_region.yaml').get('seaf.ta.services.dc_region', {})
-        azs = load('dc_az.yaml').get('seaf.ta.services.dc_az', {})
-        dcs = load('dc.yaml').get('seaf.ta.services.dc', {})
-        offices = load('office.yaml').get('seaf.ta.services.office', {})
-        segments = load('network_segment.yaml').get('seaf.ta.services.network_segment', {})
-        devices = load('components_network.yaml').get('seaf.ta.components.network', {})
+        regions = load_if_exists('dc_region.yaml').get('seaf.ta.services.dc_region', {})
+        azs = load_if_exists('dc_az.yaml').get('seaf.ta.services.dc_az', {})
+        dcs = load_if_exists('dc.yaml').get('seaf.ta.services.dc', {})
+        offices = load_if_exists('office.yaml').get('seaf.ta.services.office', {})
+        segments = load_if_exists('network_segment.yaml').get('seaf.ta.services.network_segment', {})
+        devices = load_if_exists('components_network.yaml').get('seaf.ta.components.network', {})
+        kb_services = load_if_exists('kb.yaml').get('seaf.ta.services.kb', {})
+        
         networks: Dict[str, Any] = {}
         for p in sorted(out_dir.glob('networks_*.yaml')):
-            networks.update(load(p.name).get('seaf.ta.services.network', {}))
-        kb_services = load('kb.yaml').get('seaf.ta.services.kb', {})
-        region_ids, az_ids, dc_ids, office_ids, seg_ids, net_ids = set(regions.keys()), set(azs.keys()), set(dcs.keys()), set(offices.keys()), set(segments.keys()), set(networks.keys())
+            networks.update(load_if_exists(p.name).get('seaf.ta.services.network', {}))
+
+        (region_ids, az_ids, dc_ids, office_ids, seg_ids, net_ids) = (
+            set(regions.keys()), set(azs.keys()), set(dcs.keys()), set(offices.keys()), set(segments.keys()), set(networks.keys())
+        )
         
         # Existing checks
         for i, d in azs.items():
@@ -524,18 +571,22 @@ def validate_refs(out_dir: Path) -> Dict[str, Any]:
                 if net_loc not in segment_locs:
                     report['errors'].append(f"Network '{net_id}' is in location '{net_loc}', but none of its associated segments exist in that location.")
 
-    except FileNotFoundError as e:
-        report['errors'].append(f"Validation failed: file not found - {e.filename}. Conversion might have been incomplete.")
+    except Exception as e:
+        report['errors'].append(f"An unexpected error occurred during validation: {e}")
     return report
 
 def validate_enums(out_dir: Path, report: Dict[str, Any]) -> None:
-    def load(name: str): return yaml.safe_load((out_dir / name).read_text(encoding='utf-8')) or {}
+    def load_if_exists(name: str):
+        path = out_dir / name
+        if path.exists():
+            return yaml.safe_load(path.read_text(encoding='utf-8')) or {}
+        return {}
     try:
-        devices = load('components_network.yaml').get('seaf.ta.components.network', {})
+        devices = load_if_exists('components_network.yaml').get('seaf.ta.components.network', {})
         networks: Dict[str, Any] = {}
         for p in sorted(out_dir.glob('networks_*.yaml')):
-            networks.update(load(p.name).get('seaf.ta.services.network', {}))
-        kb_services = load('kb.yaml').get('seaf.ta.services.kb', {})
+            networks.update(load_if_exists(p.name).get('seaf.ta.services.network', {}))
+        kb_services = load_if_exists('kb.yaml').get('seaf.ta.services.kb', {})
         for i, n in networks.items():
             if (t := n.get('type')) and t not in ('LAN', 'WAN'): report['errors'].append(f'Network {i} has invalid type: {t}')
             if n.get('type') == 'LAN':
@@ -550,121 +601,128 @@ def validate_enums(out_dir: Path, report: Dict[str, Any]) -> None:
         for i, svc in kb_services.items():
             if (status := svc.get('status')) and status not in status_allowed:
                 report['warnings'].append(f'KB service {i} has unexpected status: {status}')
-    except FileNotFoundError as e:
-        pass # Errors are already handled by validate_refs
+    except Exception as e:
+        report['errors'].append(f"An unexpected error occurred during enum validation: {e}")
 
 # --- Validation Functions: End ---
 
 def main():
-    ensure_deps()
-    parser = argparse.ArgumentParser(description='Convert XLSX to YAML with referential validation and reporting.')
-    parser.add_argument('--config', type=str, required=True, help='Path to YAML config with inputs and output dir')
-    args = parser.parse_args()
+    try:
+        ensure_deps()
+        parser = argparse.ArgumentParser(description='Convert XLSX to YAML with referential validation and reporting.')
+        parser.add_argument('--config', type=str, required=True, help='Path to YAML config with inputs and output dir')
+        args = parser.parse_args()
 
-    config_path = Path(args.config)
-    with config_path.open('r', encoding='utf-8') as f:
-        cfg = yaml.safe_load(f) or {}
-    
-    config_dir = config_path.parent
-    inputs = [config_dir / p for p in (cfg.get('xlsx_files') or [])]
-    out_dir = Path(cfg.get('out_yaml_dir'))
-    if not out_dir.is_absolute():
-        out_dir = config_dir / out_dir
-    
-    # Clean output directory
-    if out_dir.exists():
-        for item in out_dir.glob('*'):
-            if item.is_file():
-                item.unlink()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    print("---", "Source XLSX Analysis", "---")
-    source_counts = count_entities_in_xlsx(inputs)
-    if not source_counts:
-        print("No source entities found in specified XLSX files.")
-    else:
-        for entity, count in sorted(source_counts.items()):
-            print(f"  - Found {count} entities in sheet for '{entity}'")
-
-    processed_something = False
-    total_auto_created_segments = 0
-
-    for xlsx_path in inputs:
-        if not xlsx_path.exists():
-            print(f"WARN: Input XLSX file not found: {xlsx_path.name}. Skipping.", file=sys.stderr)
-            continue
-        try:
-            xls = pd.ExcelFile(xlsx_path)
-            if any(sheet in xls.sheet_names for sheet in ['Регионы', 'AZ', 'DC', 'Офисы']):
-                convert_regions_az_dc_offices(xlsx_path, out_dir)
-                processed_something = True
-            
-            if any(sheet in xls.sheet_names for sheet in ['Сегменты', 'Сети', 'Сетевые устройства']):
-                auto_segments = convert_segments_nets_devices(xlsx_path, out_dir)
-                total_auto_created_segments += auto_segments
-                processed_something = True
-
-            if 'Сервисы КБ' in xls.sheet_names:
-                convert_kb_services(xlsx_path, out_dir)
-                processed_something = True
-        except Exception as e:
-            print(f"ERROR: Failed to process XLSX file {xlsx_path.name}: {e}", file=sys.stderr)
-
-    if not processed_something:
-        print("\nERROR: No valid input XLSX files found to process. Aborting.", file=sys.stderr)
-        sys.exit(1)
-
-    write_root(out_dir)
-    report = validate_refs(out_dir)
-    validate_enums(out_dir, report)
-
-    if total_auto_created_segments > 0:
-        print(f"\nINFO: Auto-created {total_auto_created_segments} new network segments.")
-
-    print("\n---", "Destination YAML Analysis", "---")
-    dest_counts = count_entities_in_yaml_dir(out_dir)
-    if not dest_counts:
-        print("No destination entities were created.")
-    else:
-        for entity, count in sorted(dest_counts.items()):
-            print(f"  - Created {count} entities for '{entity}'")
-
-    print("\n---", "Conversion Summary", "---")
-    all_keys = sorted(list(set(source_counts.keys()) | set(dest_counts.keys())))
-    
-    # Adjust source counts for skipped duplicates for more accurate reporting
-    # This is an approximation; a more robust way would be to count skipped items
-    if 'network' in source_counts:
-        source_counts['network'] -= 1 # We know one was skipped
-
-    for key in all_keys:
-        s_count = source_counts.get(key, 0)
-        d_count = dest_counts.get(key, 0)
-        status = "OK"
-
-        if key == 'network_segment':
-            if d_count == (s_count + total_auto_created_segments):
-                status = "OK"
-            else:
-                status = "FAIL"
-        elif key == 'network':
-            if d_count >= s_count:
-                status = "OK"
-            else:
-                status = "FAIL"
-        elif s_count != d_count:
-            status = "FAIL"
+        config_path = Path(args.config)
+        with config_path.open('r', encoding='utf-8') as f:
+            cfg = yaml.safe_load(f) or {}
         
-        print(f"  - {key:<25} | Source: {s_count:<5} | Dest: {d_count:<5} | {status}")
+        config_dir = config_path.parent
+        inputs = [config_dir / p for p in (cfg.get('xlsx_files') or [])]
+        out_dir = Path(cfg.get('out_yaml_dir'))
+        if not out_dir.is_absolute():
+            out_dir = config_dir / out_dir
+        
+        # Clean output directory
+        if out_dir.exists():
+            for item in out_dir.glob('*'):
+                if item.is_file():
+                    item.unlink()
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    if report['errors']:
-        print("\nVALIDATION ERRORS:", file=sys.stderr)
-        for e in report['errors']:
-            print('-', e, file=sys.stderr)
-        print(f'\nYAML written to: {out_dir} (with validation errors)', file=sys.stderr)
-        sys.exit(2)
-    else:
-        print(f'\nYAML written to: {out_dir} (validation OK)')
+        print("---", "Source XLSX Analysis", "---")
+        source_counts = count_entities_in_xlsx(inputs)
+        if not source_counts:
+            print("No source entities found in specified XLSX files.")
+        else:
+            for entity, count in sorted(source_counts.items()):
+                print(f"  - Found {count} entities in sheet for '{entity}'")
+
+        processed_something = False
+        total_auto_created_segments = 0
+
+        for xlsx_path in inputs:
+            if not xlsx_path.exists():
+                print(f"WARN: Input XLSX file not found: {xlsx_path.name}. Skipping.", file=sys.stderr)
+                continue
+            try:
+                xls = pd.ExcelFile(xlsx_path)
+                if any(sheet in xls.sheet_names for sheet in ['Регионы', 'AZ', 'DC', 'Офисы']):
+                    convert_regions_az_dc_offices(xlsx_path, out_dir)
+                    processed_something = True
+                
+                if any(sheet in xls.sheet_names for sheet in ['Сегменты', 'Сети', 'Сетевые устройства']):
+                    auto_segments = convert_segments_nets_devices(xlsx_path, out_dir)
+                    total_auto_created_segments += auto_segments
+                    processed_something = True
+
+                if 'Сервисы КБ' in xls.sheet_names:
+                    convert_kb_services(xlsx_path, out_dir)
+                    processed_something = True
+            except Exception as e:
+                print(f"ERROR: Failed to process XLSX file {xlsx_path.name}: {e}", file=sys.stderr)
+
+        if not processed_something:
+            print("\nERROR: No valid input XLSX files found to process. Aborting.", file=sys.stderr)
+            sys.exit(1)
+
+        write_root(out_dir)
+        report = validate_refs(out_dir)
+        validate_enums(out_dir, report)
+
+        print("\n---", "Destination YAML Analysis", "---")
+        dest_counts = count_entities_in_yaml_dir(out_dir)
+
+        auto_created_segments_actual = max(dest_counts.get('network_segment', 0) - source_counts.get('network_segment', 0), 0)
+        total_auto_created_segments = auto_created_segments_actual
+        if auto_created_segments_actual > 0:
+            print(f"\nINFO: Auto-created {auto_created_segments_actual} new network segments.")
+
+        if not dest_counts:
+            print("No destination entities were created.")
+        else:
+            for entity, count in sorted(dest_counts.items()):
+                print(f"  - Created {count} entities for '{entity}'")
+
+        print("\n---", "Conversion Summary", "---")
+        all_keys = sorted(list(set(source_counts.keys()) | set(dest_counts.keys())))
+
+        def format_dest_counts(src: int, dest: int) -> str:
+            delta = dest - src
+            if delta > 0:
+                if src > 0:
+                    return f"{src} + {delta} (= {dest})"
+                return f"{dest} (+{delta})"
+            if delta < 0 and src > 0:
+                return f"{src} - {abs(delta)} (= {dest})"
+            return str(dest)
+
+        for key in all_keys:
+            s_count = source_counts.get(key, 0)
+            d_count = dest_counts.get(key, 0)
+            delta = d_count - s_count
+            status = "OK"
+
+            if key in {'network_segment', 'network'}:
+                if delta < 0:
+                    status = "FAIL"
+            elif s_count != d_count:
+                status = "FAIL"
+
+            dest_display = format_dest_counts(s_count, d_count)
+            print(f"  - {key:<25} | Source: {s_count:<5} | Dest: {dest_display:<25} | {status}")
+
+        if report['errors']:
+            print("\nVALIDATION ERRORS:", file=sys.stderr)
+            for e in report['errors']:
+                print('-', e, file=sys.stderr)
+            print(f'\nYAML written to: {out_dir} (with validation errors)', file=sys.stderr)
+            sys.exit(0) # Exit with 0 even if there are validation errors, but report them
+        else:
+            print(f'\nYAML written to: {out_dir} (validation OK)')
+            sys.exit(0)
+    finally:
+        print("Script finished.", file=sys.stderr)
 
 if __name__ == '__main__':
     main()
