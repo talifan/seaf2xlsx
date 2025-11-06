@@ -445,20 +445,61 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
 
     # --- Devices ---
     devices, processed_ids = {}, set()
-    if 'Сетевые устройства' in xls.sheet_names:
-        df = non_empty_rows(xls.parse('Сетевые устройства'))
+    df = None
+    device_sheet_name = None
+    for candidate in ('Сетевые устройства', '??????? ??????????'):
+        if candidate in xls.sheet_names:
+            df = non_empty_rows(xls.parse(candidate))
+            device_sheet_name = candidate
+            break
+    if df is not None:
+
+        def pick_device_value(row, columns, cleaner=ws_clean):
+            for col in columns:
+                if col in row:
+                    raw = row.get(col)
+                    val = cleaner(raw) if cleaner else raw
+                    if val is not None:
+                        return val
+            return None
+
         for index, row in df.iterrows():
-            did = id_clean(row.get('ID Устройства'))
+            did = pick_device_value(row, ('ID Устройства', 'ID ??????????'), id_clean)
             if not did:
-                print(f"WARN: Skipping row {index + 2} in sheet 'Сетевые устройства' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
+                print(f"WARN: Skipping row {index + 2} in sheet '{device_sheet_name}' of '{xlsx_path.name}' due to missing ID.", file=sys.stderr)
                 continue
             if did in processed_ids:
-                print(f"WARN: Skipping duplicate ID '{did}' in sheet 'Сетевые устройства', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
+                print(f"WARN: Skipping duplicate ID '{did}' in sheet '{device_sheet_name}', row {index + 2} of '{xlsx_path.name}'.", file=sys.stderr)
                 continue
             processed_ids.add(did)
-            entry = {'title': ws_clean(row.get('Наименование')), 'realization_type': ws_clean(row.get('Тип реализации')), 'type': ws_clean(row.get('Тип')), 'model': ws_clean(row.get('Модель')), 'purpose': ws_clean(row.get('Назначение')), 'address': id_clean(row.get('IP адрес')), 'description': ws_clean(row.get('Описание'))}
-            if seg := id_clean(row.get('Расположение (ID сегмента/зоны)')): entry['segment'] = seg
-            if nets_list := to_list(row.get('Подключенные сети (список)')): entry['network_connection'] = nets_list
+
+            entry: Dict[str, Any] = {}
+            if title := pick_device_value(row, ('Наименование', '????????????')):
+                entry['title'] = title
+            if realization := pick_device_value(row, ('Тип реализации', '??? ??????????')):
+                entry['realization_type'] = realization
+            if dtype := pick_device_value(row, ('Тип устройства', 'Тип оборудования', 'Тип', '???')):
+                entry['type'] = dtype
+            if model := pick_device_value(row, ('Модель', '??????')):
+                entry['model'] = model
+            if purpose := pick_device_value(row, ('Назначение', '??????????')):
+                entry['purpose'] = purpose
+            if address := pick_device_value(row, ('IP адрес', 'IP ?????'), id_clean):
+                entry['address'] = address
+            if description := pick_device_value(row, ('Описание', '????????')):
+                entry['description'] = description
+            if seg := pick_device_value(row, ('Расположение (ID сегмента/зоны)', 'Сетевой сегмент/зона (ID)', 'Сетевой сегмент/зона', '???????????? (ID ????????/????)'), id_clean):
+                entry['segment'] = seg
+            if loc := pick_device_value(row, ('Расположение', '????????????'), id_clean):
+                entry.setdefault('sber', {})['location'] = loc
+            networks_raw = pick_device_value(row, ('Подключенные сети (список)', 'Подключенные сети', '???????????? ???? (??????)'), cleaner=None)
+            if networks_raw:
+                nets_list = parse_multiline_ids(networks_raw)
+                if nets_list:
+                    entry['network_connection'] = nets_list
+            if not entry.get('title'):
+                entry['title'] = did
+
             devices[did] = entry
     if devices:
         write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
