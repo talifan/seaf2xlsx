@@ -3,6 +3,7 @@ import re
 import argparse
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+from copy import deepcopy
 import math
 import io
 import yaml
@@ -444,7 +445,8 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
         write_networks_per_location(nets, out_dir, company_prefix_for_files)
 
     # --- Devices ---
-    devices, processed_ids = {}, set()
+    devices_raw: List[Tuple[str, Dict[str, Any]]] = []
+    processed_ids = set()
     df = None
     device_sheet_name = None
     for candidate in ('Сетевые устройства', '??????? ??????????'):
@@ -490,8 +492,11 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                 entry['description'] = description
             if seg := pick_device_value(row, ('Расположение (ID сегмента/зоны)', 'Сетевой сегмент/зона (ID)', 'Сетевой сегмент/зона', '???????????? (ID ????????/????)'), id_clean):
                 entry['segment'] = seg
-            if loc := pick_device_value(row, ('Расположение', '????????????'), id_clean):
-                entry.setdefault('sber', {})['location'] = loc
+            raw_location = pick_device_value(row, ('Расположение', '????????????'), lambda v: v)
+            locations = parse_locations(raw_location)
+            if locations:
+                entry['location'] = locations[0] if len(locations) == 1 else locations
+            entry['_locations'] = locations
             networks_raw = pick_device_value(row, ('Подключенные сети (список)', 'Подключенные сети', '???????????? ???? (??????)'), cleaner=None)
             if networks_raw:
                 nets_list = parse_multiline_ids(networks_raw)
@@ -500,7 +505,61 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             if not entry.get('title'):
                 entry['title'] = did
 
+            devices_raw.append((did, entry))
+
+    devices: Dict[str, Dict[str, Any]] = {}
+    missing_network_ids: set[str] = set()
+
+    def determine_segments_for_location(loc: str, net_ids: List[str]) -> List[str]:
+        matches: List[str] = []
+        for net_id in net_ids:
+            net_info = nets.get(net_id)
+            if not net_info:
+                missing_network_ids.add(net_id)
+                continue
+            for seg_id in net_info.get('segment') or []:
+                seg_data = segments.get(seg_id)
+                seg_loc = (seg_data.get('sber') or {}).get('location') if seg_data else None
+                if seg_loc == loc:
+                    matches.append(seg_id)
+        return list(dict.fromkeys(matches))
+
+    for did, entry in devices_raw:
+        locations = entry.pop('_locations', [])
+        if isinstance(entry.get('location'), list):
+            entry.pop('location', None)
+
+        net_ids = entry.get('network_connection') or []
+
+        def assign_segments(target_entry: Dict[str, Any], loc: str) -> None:
+            if target_entry.get('segment'):
+                return
+            matches = determine_segments_for_location(loc, net_ids)
+            if matches:
+                target_entry['segment'] = matches[0] if len(matches) == 1 else matches
+                print(f"INFO: Device {did} assigned segment(s) {target_entry['segment']} based on networks for location {loc}.")
+
+        if len(locations) > 1:
+            print(f"INFO: Device {did} has multiple locations {locations}; creating per-location copies.")
+            for loc in locations:
+                suffix = loc.split('.')[-1] if loc else 'loc'
+                new_id = f"{did}-{suffix}"
+                clone = deepcopy(entry)
+                clone['location'] = loc
+                assign_segments(clone, loc)
+                devices[new_id] = clone
+                print(f"INFO: Created device {new_id} for location {loc}.")
+        else:
+            loc = locations[0] if locations else entry.get('location')
+            if loc:
+                entry['location'] = loc
+                assign_segments(entry, loc)
             devices[did] = entry
+
+    if missing_network_ids:
+        missing_list = ', '.join(sorted(missing_network_ids))
+        print(f"WARN: Networks referenced by devices but missing in network data: {missing_list}")
+
     if devices:
         write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devices})
     
