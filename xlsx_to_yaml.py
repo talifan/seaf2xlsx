@@ -803,7 +803,7 @@ def main():
             delta = d_count - s_count
             status = "OK"
 
-            if key in {'network_segment', 'network'}:
+            if key in {'network_segment', 'network', 'components.network'}:
                 if delta < 0:
                     status = "FAIL"
             elif s_count != d_count:
