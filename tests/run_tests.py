@@ -8,7 +8,7 @@ import pandas as pd
 CWD = Path.cwd()
 
 # Directories
-YAML_SOURCE_DIR = CWD / 'home_cinema_example'
+YAML_SOURCE_DIR = CWD / 'example/seaf1'
 XLSX_INITIAL_DIR = CWD / 'out_xlsx_initial'
 YAML_ROUNDTRIP_DIR = CWD / 'out_yaml_roundtrip'
 XLSX_FINAL_DIR = CWD / 'out_xlsx_final'

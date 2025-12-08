@@ -1,0 +1,6 @@
+yaml_dir: example/seaf1
+out_xlsx_dir: output_xlsx
+xlsx_files:
+  - regions_az_dc_offices.xlsx
+  - segments_nets_netdevices.xlsx
+  - kb_services.xlsx

@@ -1,0 +1,5 @@
+xlsx_files:
+  - output_xlsx/regions_az_dc_offices.xlsx
+  - output_xlsx/segments_nets_netdevices.xlsx
+  - output_xlsx/kb_services.xlsx
+out_yaml_dir: output_seaf1
