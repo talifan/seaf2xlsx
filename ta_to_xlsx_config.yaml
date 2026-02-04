@@ -1,0 +1,11 @@
+yaml_dir: ../ta
+out_xlsx_dir: ta_xlsx
+xlsx_files:
+  - ta_regions.xlsx
+  - ta_segments.xlsx
+  - ta_kb.xlsx
+  - ta_services.xlsx
+  - ta_components.xlsx
+  - ta_links.xlsx
+  - ta_stands.xlsx
+  - ta_reverse_cloud_ru.xlsx

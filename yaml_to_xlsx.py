@@ -174,7 +174,7 @@ def save_components(ydir: Path, writer: pd.ExcelWriter):
             if rkey in cmap:
                 cls = cmap[rkey]
                 for i, d in ent.items():
-                    rows.append({'Идентификатор': i, 'Наименование': d.get('title'), 'Описание': d.get('description'), 'Класс': cls, 'Тип': d.get('type') or d.get('device_type'), 'Локация': format_list(d.get('location')), 'Сети': format_list(d.get('network_connection') or d.get('subnets'))})
+                    rows.append({'Идентификатор': i, 'Наименование': d.get('title'), 'Описание': d.get('description'), 'Класс': cls, 'Тип': d.get('type') or d.get('device_type'), 'Локация': format_list(d.get('location')), 'Сети': format_list(d.get('network_connection') or d.get('subnets')), 'Сегмент': d.get('segment')})
     if rows: pd.DataFrame(rows).to_excel(writer, sheet_name='Компоненты', index=False)
 
 def save_links(ydir: Path, writer: pd.ExcelWriter):

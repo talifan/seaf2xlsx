@@ -1,0 +1,8 @@
+xlsx_files:
+  - ../roundtrip_test/xlsx_out/regions.xlsx
+  - ../roundtrip_test/xlsx_out/segments.xlsx
+  - ../roundtrip_test/xlsx_out/kb.xlsx
+  - ../roundtrip_test/xlsx_out/services.xlsx
+  - ../roundtrip_test/xlsx_out/components.xlsx
+  - ../roundtrip_test/xlsx_out/links.xlsx
+out_yaml_dir: ../roundtrip_test/yaml_recovered

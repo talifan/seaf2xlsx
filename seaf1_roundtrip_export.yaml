@@ -1,0 +1,9 @@
+yaml_dir: ../seaf-dzo-example/architecture/ta/home_cinema
+out_xlsx_dir: ../roundtrip_test/xlsx_out
+xlsx_files:
+  - regions.xlsx
+  - segments.xlsx
+  - kb.xlsx
+  - services.xlsx
+  - components.xlsx
+  - links.xlsx
