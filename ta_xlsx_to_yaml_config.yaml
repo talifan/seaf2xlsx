@@ -1,0 +1,9 @@
+xlsx_files:
+  - ta_xlsx/ta_regions.xlsx
+  - ta_xlsx/ta_segments.xlsx
+  - ta_xlsx/ta_kb.xlsx
+  - ta_xlsx/ta_services.xlsx
+  - ta_xlsx/ta_components.xlsx
+  - ta_xlsx/ta_links.xlsx
+  - ta_xlsx/ta_stands.xlsx
+out_yaml_dir: ta_recovered
