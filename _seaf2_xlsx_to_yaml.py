@@ -2,13 +2,59 @@ import sys
 import re
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Set
 from copy import deepcopy
 import math
 import yaml
 import pandas as pd
 
 DEBUG_LOG_FILE = Path('debug_script.log')
+
+# --- Schema Definitions for SEAF2 ---
+SCHEMA_DEF = {
+    'Регионы': {
+        'mandatory': ['ID Региона'],
+        'optional': ['Наименование', 'Описание']
+    },
+    'AZ': {
+        'mandatory': ['ID AZ'],
+        'optional': ['Наименование', 'Описание', 'Регион', 'Поставщик']
+    },
+    'DC': {
+        'mandatory': ['ID DC'],
+        'optional': ['Наименование', 'Описание', 'Адрес', 'AZ', 'Кол-во стоек', 'Tier']
+    },
+    'Офисы': {
+        'mandatory': ['ID Офиса'],
+        'optional': ['Наименование', 'Описание', 'Адрес', 'Регион']
+    },
+    'Сегменты': {
+        'mandatory': ['ID сетевые сегмента/зоны'],
+        'optional': ['Наименование', 'Описание', 'Расположение', 'Зона']
+    },
+    'Сети': {
+        'mandatory': ['ID Network'],
+        'optional': ['Наименование', 'Описание', 'Тип сети', 'Расположение', 'Сетевой сегмент/зона', 'VLAN', 'Адрес сети']
+    },
+    'Сетевые устройства': {
+        'mandatory': ['ID Устройства'],
+        'optional': ['Наименование', 'Тип устройства', 'Расположение', 'Подключенные сети', 'Описание', 'IP адрес']
+    },
+    'Сервисы КБ': {
+        'mandatory': ['ID КБ сервиса'],
+        'optional': ['Название сервиса', 'Описание', 'Статус', 'Технология', 'Название ПО', 'Подключенные сети']
+    },
+    'Тех. сервисы': {
+        'mandatory': ['Идентификатор', 'Класс'],
+        'optional': ['Наименование', 'Описание', 'Тип сервиса', 'Тип резервирования', 'Подключен к сети', 'ЦОД']
+    }
+}
+
+SHEET_ALIASES = {
+    'Tech Services': 'Тех. сервисы',
+    'Сетевые устройства': 'Сетевые устройства',
+    '??????? ??????????': 'Сетевые устройства'
+}
 
 def log_debug(message):
     try:
@@ -36,6 +82,94 @@ SVC_TYPE_MAP = {
     'Мониторинг': 'Серверы приложений и т.д.',
     'Логгирование': 'Серверы приложений и т.д.'
 }
+
+# --- Validation Logic ---
+
+def normalize_sheet_name(name: str) -> str:
+    return SHEET_ALIASES.get(name, name)
+
+def validate_structure(xlsx_path: Path, force: bool) -> bool:
+    print(f"\n[CHECK] Analyzing structure: {xlsx_path.name}")
+    try:
+        xls = pd.ExcelFile(xlsx_path)
+    except Exception as e:
+        print(f"[FATAL] Cannot open file: {e}")
+        return False
+
+    issues_found = False
+    critical_missing = False
+    found_sheets = set(normalize_sheet_name(s) for s in xls.sheet_names)
+    relevant_sheets = set(SCHEMA_DEF.keys())
+    
+    if not found_sheets.intersection(relevant_sheets):
+        print(f"  [!!] No recognized SEAF2 sheets found. (Expected one of: {', '.join(relevant_sheets)})")
+        return False if not force else True
+
+    for sheet_orig in xls.sheet_names:
+        sheet_norm = normalize_sheet_name(sheet_orig)
+        if sheet_norm not in SCHEMA_DEF: continue
+            
+        print(f"  Sheet '{sheet_orig}' (mapped to '{sheet_norm}'):")
+        df = xls.parse(sheet_orig).dropna(how='all')
+        cols = set(df.columns)
+        
+        required = SCHEMA_DEF[sheet_norm]['mandatory']
+        optional = SCHEMA_DEF[sheet_norm]['optional']
+        
+        missing_req = [c for c in required if c not in cols]
+        if missing_req:
+            print(f"    [CRITICAL] Missing MANDATORY columns: {missing_req}")
+            critical_missing = True
+            issues_found = True
+        
+        missing_opt = [c for c in optional if c not in cols]
+        if missing_opt:
+            print(f"    [WARN] Missing optional columns: {missing_opt}")
+            issues_found = True
+            
+        if not missing_req and not missing_opt:
+            print("    [OK] All expected columns found.")
+
+    if critical_missing and not force:
+        print("\n[STOP] Critical columns are missing. Unable to proceed reliably.")
+        return False
+        
+    if issues_found and not force:
+        choice = input("\n[?] Structural issues found. Continue anyway? [y/N]: ").strip().lower()
+        if choice != 'y': return False
+            
+    return True
+
+class DataValidator:
+    def __init__(self):
+        self.seen_ids: Dict[str, str] = {}
+        self.known_networks: Set[str] = set()
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+
+    def register_id(self, entity_id: str, context: str):
+        if not entity_id: return
+        if entity_id in self.seen_ids:
+            self.errors.append(f"Duplicate ID '{entity_id}' found in {context}. Prev: {self.seen_ids[entity_id]}")
+        else:
+            self.seen_ids[entity_id] = context
+
+    def register_network(self, net_id: str):
+        if net_id: self.known_networks.add(net_id)
+
+    def check_ref_network(self, net_refs: List[str], owner_id: str):
+        for net in net_refs:
+            if net and net not in self.known_networks:
+                self.warnings.append(f"Object '{owner_id}' references unknown network '{net}'")
+
+    def report(self):
+        if not self.errors and not self.warnings: return
+        print("\n--- Data Validation Report (SEAF2) ---")
+        for err in self.errors: print(f"  [DATA ERROR] {err}")
+        for warn in self.warnings[:10]: print(f"  [DATA WARN]  {warn}")
+        if len(self.warnings) > 10: print(f"  ... and {len(self.warnings) - 10} more warnings.")
+
+VALIDATOR = DataValidator()
 
 def normalize_svc_type(val):
     if not val: return 'Серверы приложений и т.д.'
@@ -171,6 +305,7 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
             if rid and rid not in proc:
                 proc.add(rid)
                 reg[rid] = {'description': ws_clean(row.get('Описание')), 'external_id': rid.split('.')[-1], 'title': ws_clean(row.get('Наименование'))}
+                VALIDATOR.register_id(rid, "Регионы")
     if reg: write_yaml(out_dir / 'dc_region.yaml', {'seaf.company.ta.services.dc_regions': reg})
     proc = set()
     if 'AZ' in xls.sheet_names:
@@ -179,6 +314,7 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
             if aid and aid not in proc:
                 proc.add(aid)
                 azs[aid] = {'description': ws_clean(row.get('Описание')), 'external_id': aid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование')), 'vendor': ws_clean(row.get('Поставщик'))}
+                VALIDATOR.register_id(aid, "AZ")
     if azs: write_yaml(out_dir / 'dc_az.yaml', {'seaf.company.ta.services.dc_azs': azs})
     proc = set()
     if 'DC' in xls.sheet_names:
@@ -187,6 +323,7 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
             if did and did not in proc:
                 proc.add(did)
                 dcs[did] = {'address': ws_clean(row.get('Адрес')), 'availabilityzone': id_clean(row.get('AZ')), 'description': ws_clean(row.get('Описание')), 'external_id': did.split('.')[-1], 'ownership': ws_clean(row.get('Форма владения')), 'rack_qty': ws_clean(row.get('Кол-во стоек')), 'tier': ws_clean(row.get('Tier')), 'title': ws_clean(row.get('Наименование')), 'type': ws_clean(row.get('Тип')), 'vendor': ws_clean(row.get('Поставщик'))}
+                VALIDATOR.register_id(did, "DC")
     if dcs: write_yaml(out_dir / 'dc.yaml', {'seaf.company.ta.services.dcs': dcs})
     proc = set()
     if 'Офисы' in xls.sheet_names:
@@ -195,6 +332,7 @@ def convert_regions_az_dc_offices(xlsx_path: Path, out_dir: Path):
             if oid and oid not in proc:
                 proc.add(oid)
                 off[oid] = {'address': ws_clean(row.get('Адрес')), 'description': ws_clean(row.get('Описание')), 'external_id': oid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование'))}
+                VALIDATOR.register_id(oid, "Офисы")
     if off: write_yaml(out_dir / 'dc_office.yaml', {'seaf.company.ta.services.dc_offices': off})
 
 def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
@@ -208,12 +346,15 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
                 proc_seg.add(sid)
                 locs = parse_locations(row.get('Расположение'))
                 segments[sid] = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание')), 'sber': {'location': locs[0] if locs else None, 'zone': ws_clean(row.get('Зона'))}}
+                VALIDATOR.register_id(sid, "Сегменты")
     nets, proc_net = {}, set()
     if 'Сети' in xls.sheet_names:
         for idx, row in non_empty_rows(xls.parse('Сети')).iterrows():
             nid = id_clean(row.get('ID Network'))
             if nid and nid not in proc_net:
                 proc_net.add(nid)
+                VALIDATOR.register_id(nid, "Сети")
+                VALIDATOR.register_network(nid)
                 ntype = ws_clean(row.get('Тип сети'))
                 entry = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание')), 'type': ntype, 'location': parse_locations(row.get('Расположение')), 'segment': parse_multiline_ids(row.get('Сетевой сегмент/зона(ID)') or row.get('Сетевой сегмент/зона'))}
                 if ntype == 'LAN':
@@ -248,8 +389,11 @@ def convert_segments_nets_devices(xlsx_path: Path, out_dir: Path) -> int:
             did = id_clean(row.get('ID Устройства') or row.get('ID ??????????'))
             if did and did not in proc_dev:
                 proc_dev.add(did)
+                VALIDATOR.register_id(did, "Сетевые устройства")
                 locs = parse_locations(row.get('Расположение'))
-                obj = {'title': ws_clean(row.get('Наименование')) or did, 'realization_type': ws_clean(row.get('Тип реализации')), 'type': ws_clean(row.get('Тип устройства') or row.get('Тип')), 'network_connection': parse_multiline_ids(row.get('Подключенные сети (список)') or row.get('Подключенные сети')), 'segment': id_clean(row.get('Расположение (ID сегмента/зоны)') or row.get('Сетевой сегмент/зона (ID)'))}
+                conn_nets = parse_multiline_ids(row.get('Подключенные сети (список)') or row.get('Подключенные сети'))
+                VALIDATOR.check_ref_network(conn_nets, did)
+                obj = {'title': ws_clean(row.get('Наименование')) or did, 'realization_type': ws_clean(row.get('Тип реализации')), 'type': ws_clean(row.get('Тип устройства') or row.get('Тип')), 'network_connection': conn_nets, 'segment': id_clean(row.get('Расположение (ID сегмента/зоны)') or row.get('Сетевой сегмент/зона (ID)'))}
                 for k, cols in [('model', ['Модель']), ('purpose', ['Назначение']), ('address', ['IP адрес']), ('description', ['Описание'])]:
                     for c in cols:
                         if val := ws_clean(row.get(c)): obj[k] = val; break
@@ -268,7 +412,10 @@ def convert_kb_services(xlsx_path: Path, out_dir: Path):
             sid = id_clean(row.get('ID КБ сервиса'))
             if sid and sid not in proc:
                 proc.add(sid)
-                kb[sid] = {'title': ws_clean(row.get('Название сервиса')) or ws_clean(row.get('Название')), 'description': ws_clean(row.get('Описание')), 'status': ws_clean(row.get('Статус')), 'technology': ws_clean(row.get('Технология')), 'software_name': ws_clean(row.get('Название ПО')), 'tag': ws_clean(row.get('Tag')), 'network_connection': parse_multiline_ids(row.get('Подключенные сети'))}
+                VALIDATOR.register_id(sid, "Сервисы КБ")
+                conn_nets = parse_multiline_ids(row.get('Подключенные сети'))
+                VALIDATOR.check_ref_network(conn_nets, sid)
+                kb[sid] = {'title': ws_clean(row.get('Название сервиса')) or ws_clean(row.get('Название')), 'description': ws_clean(row.get('Описание')), 'status': ws_clean(row.get('Статус')), 'technology': ws_clean(row.get('Технология')), 'software_name': ws_clean(row.get('Название ПО')), 'tag': ws_clean(row.get('Tag')), 'network_connection': conn_nets}
         if kb: write_yaml(out_dir / 'kb.yaml', {'seaf.company.ta.services.kbs': kb})
     except Exception as e: print(f"WARN: KB failed for {xlsx_path.name}: {e}", file=sys.stderr)
 
@@ -282,8 +429,8 @@ def convert_tech_services(xlsx_path: Path, out_dir: Path):
         df = non_empty_rows(xls.parse(sheet))
         for _, row in df.iterrows():
             oid = id_clean(row.get('Идентификатор'))
-            if not oid or oid in proc: continue
-            proc.add(oid)
+            if not oid: continue
+            
             svc_raw = ws_clean(row.get('Тип сервиса')) or ws_clean(row.get('Класс'))
             res_val = ws_clean(row.get('Тип резервирования'))
             cls_val = ws_clean(row.get('Класс'))
@@ -293,10 +440,21 @@ def convert_tech_services(xlsx_path: Path, out_dir: Path):
                 for n in nets:
                     if l := derive_location_from_network(n): locs.append(l)
             locs = sorted(list(set(locs)))
+            
+            VALIDATOR.check_ref_network(nets, oid)
+            
             etype = 'compute_services'
             if svc_raw in SPECIAL_ENTITY_MAP: etype = SPECIAL_ENTITY_MAP[svc_raw]
             elif cls_val == 'Cluster' or (res_val and res_val.lower() in ['active-active','active-passive','n+1','да']): etype = 'clusters'
             elif cls_val == 'Compute Service': etype = 'compute_services'
+            
+            if oid in out_data[etype]:
+                existing = out_data[etype][oid]
+                existing['location'] = sorted(list(set(existing['location'] + locs)))
+                existing['network_connection'] = sorted(list(set(existing['network_connection'] + nets)))
+                continue
+            
+            VALIDATOR.register_id(oid, "Тех. сервисы")
             obj = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание')), 'location': locs, 'network_connection': nets, 'availabilityzone': []}
             if etype in ['compute_services', 'clusters']: obj['service_type'] = normalize_svc_type(svc_raw)
             if etype == 'clusters': obj['reservation_type'] = res_val
@@ -317,20 +475,36 @@ def main():
         ensure_deps()
         parser = argparse.ArgumentParser()
         parser.add_argument('--config', required=True)
+        parser.add_argument('--force', '-y', action='store_true', help='Skip validation prompts')
         args = parser.parse_args()
+        
         cpath = Path(args.config)
         if not cpath.exists(): sys.exit(1)
         with cpath.open('r', encoding='utf-8') as f: cfg = yaml.safe_load(f) or {}
-        inputs = [cpath.parent / p for p in (cfg.get('xlsx_files') or [])]
-        out_dir = cpath.parent / cfg.get('out_yaml_dir', 'out_yaml')
+        config_dir = cpath.parent
+        inputs = [config_dir / p for p in (cfg.get('xlsx_files') or [])]
+        out_dir = config_dir / cfg.get('out_yaml_dir', 'out_yaml')
+        
         if out_dir.exists():
             for i in out_dir.glob('*'):
                 if i.is_file(): i.unlink()
         out_dir.mkdir(parents=True, exist_ok=True)
-        src_counts = count_entities_in_xlsx(inputs)
-        processed = False
+        
+        valid_files = []
         for p in inputs:
-            if not p.exists(): print(f"ERROR: {p.name} not found.", file=sys.stderr); continue
+            if not p.exists():
+                print(f"ERROR: {p.name} not found.", file=sys.stderr)
+                continue
+            if validate_structure(p, args.force):
+                valid_files.append(p)
+        
+        if not valid_files:
+            print("ERROR: No valid data files to process.", file=sys.stderr)
+            sys.exit(1)
+
+        src_counts = count_entities_in_xlsx(valid_files)
+        processed = False
+        for p in valid_files:
             try:
                 xls = pd.ExcelFile(p)
                 if any(s in xls.sheet_names for s in ['Регионы','AZ','DC','Офисы']): convert_regions_az_dc_offices(p, out_dir); processed = True
@@ -338,10 +512,13 @@ def main():
                 if 'Сервисы КБ' in xls.sheet_names: convert_kb_services(p, out_dir); processed = True
                 if any(s in xls.sheet_names for s in ['Тех. сервисы','Tech Services']): convert_tech_services(p, out_dir); processed = True
             except Exception as e: print(f"ERROR: {p.name}: {e}", file=sys.stderr)
+            
         if not processed: sys.exit(1)
+        
+        VALIDATOR.report()
         write_root(out_dir)
         dst_counts = count_entities_in_yaml_dir(out_dir)
-        print("\n--- Conversion Summary ---")
+        print("\n--- Conversion Summary (SEAF2) ---")
         for k in sorted(list(set(src_counts.keys()) | set(dst_counts.keys()))):
             s, d = src_counts.get(k, 0), dst_counts.get(k, 0)
             print(f"  - {k:<25} | Source: {s:<5} | Dest: {d:<5} | {'OK' if s==d else 'FAIL'}")
