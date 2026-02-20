@@ -1,96 +1,117 @@
-# Конвертер YAML ↔ XLSX (SEAF1 и SEAF2)
+# Конвертер YAML ↔ XLSX (SEAF2)
 
-Этот набор скриптов обеспечивает полную совместимость между форматами SEAF1, SEAF2 и XLSX, позволяя конвертировать данные в обоих направлениях.
+Скрипты в этой папке конвертируют данные модели SEAF2 (`seaf.company.ta.*`) в обе стороны:
+- YAML -> XLSX
+- XLSX -> YAML
+
+Поддерживается roundtrip-проверка на примере `../data/example`.
 
 ## Основные файлы
 
-### Конвертеры для SEAF2 (Множественное число)
-- `_seaf2_yaml_to_xlsx_ta.py` - **[Рекомендуемый]** Конвертация YAML (SEAF2) → XLSX. Включает строгую типизацию объектов через `CLASS_NAME_MAP`.
-- `_seaf2_xlsx_to_yaml.py` - Конвертация XLSX → YAML (SEAF2).
-- `_seaf2_yaml_to_xlsx.py` - Базовая версия экспорта SEAF2.
+- `yaml_to_xlsx.py` - экспорт SEAF2 YAML в набор XLSX.
+- `xlsx_to_yaml.py` - импорт XLSX обратно в SEAF2 YAML.
+- `seaf2_config_yaml_to_xlsx.yaml` - конфиг экспорта.
+- `seaf2_config_xlsx_to_yaml.yaml` - конфиг импорта.
 
-### Оригинальные скрипты (для SEAF1 - Единственное число)
-- `yaml_to_xlsx.py` - Конвертация YAML (SEAF1) → XLSX
-- `xlsx_to_yaml.py` - Конвертация XLSX → YAML (SEAF1)
-
-### Тестирование
-- `tests/run_tests.py` - Тестирование конвертации SEAF1 (Roundtrip)
-- `tests/run_tests_seaf2.py` - Тестирование конвертации SEAF2 (Roundtrip)
-- `tests/run_cross_tests.py` - Тестирование совместимости (SEAF1 ↔ SEAF2)
-
-## Ключевые различия между SEAF1 и SEAF2
-
-| Сущность | SEAF1 | SEAF2 |
-|----------|-------|-------|
-| Пространство имен | `seaf.ta.*` | `seaf.company.ta.*` |
-| Имена сущностей | единственное число | множественное число |
-| Файлы | `office.yaml` | `dc_office.yaml` |
-| Файлы | `components_network.yaml` | `network_component.yaml` |
-
-## Использование
-
-### 1. Конвертация SEAF2 → XLSX
+## Зависимости
 
 ```bash
-# Рекомендуемый способ для папки ta
-python _seaf2_yaml_to_xlsx_ta.py --config ta_to_xlsx_config.yaml
+python -m pip install -U pip
+python -m pip install pandas openpyxl pyyaml
 ```
-
-Пример конфигурации (`ta_to_xlsx_config.yaml`):
-```yaml
-yaml_dir: ../ta
-out_xlsx_dir: ta_xlsx
-xlsx_files:
-  - ta_regions.xlsx
-  - ta_segments.xlsx
-  - ta_kb.xlsx
-  - ta_services.xlsx
-  - ta_components.xlsx
-  - ta_links.xlsx
-```
-
-### 2. Конвертация XLSX → SEAF2
-
-```bash
-python _seaf2_xlsx_to_yaml.py --config ta_xlsx_to_yaml_config.yaml
-```
-
-### 3. Конвертация SEAF1 ↔ XLSX
-
-```bash
-# YAML -> XLSX
-python yaml_to_xlsx.py --config seaf1_roundtrip_export.yaml
-
-# XLSX -> YAML
-python xlsx_to_yaml.py --config seaf1_roundtrip_import.yaml
-```
-
-## Особенности и улучшения
-
-### 1. Строгая классификация объектов
-В скрипте `_seaf2_yaml_to_xlsx_ta.py` реализован маппинг `CLASS_NAME_MAP`, который гарантирует корректное определение класса (например, `K8s Cluster` вместо дефолтного `Server`) независимо от регистра или специфики множественного числа в YAML.
-
-### 2. Авто-локация (Auto Location)
-- **XLSX → YAML:** Если колонка "ЦОД" пуста, локация автоматически вычисляется по именам подключенных сетей (например, `*.dc01.*` → `*.dc.01`).
-- **YAML → XLSX:** Если в YAML поле `location` отсутствует, колонка "ЦОД" в Excel заполняется на основе анализа сетевых связей.
-
-### 3. Нормализация и защита данных
-- **Homoglyph Protection:** Скрипт защищен от опечаток в типах сервисов (авто-замена латинских букв на кириллические в визуально похожих символах: C, A, E, O, P, X, y).
-- **Deterministic Lists:** Списки (сети, локации) в Excel всегда **отсортированы и разделены запятыми**, что обеспечивает консистентность файлов.
 
 ## Структура данных SEAF2
 
-### Основные пространства имен:
-- `seaf.company.ta.services.dc_regions` - Регионы ЦОД
-- `seaf.company.ta.services.dc_azs` - Зоны доступности
-- `seaf.company.ta.services.dcs` - Центры обработки данных
-- `seaf.company.ta.services.dc_offices` - Офисы
-- `seaf.company.ta.services.network_segments` - Сетевые сегменты
-- `seaf.company.ta.services.networks` - Сети
-- `seaf.company.ta.services.kbs` - База знаний
-- `seaf.company.ta.components.networks` - Сетевые компоненты
+Ключевые пространства имен:
+- `seaf.company.ta.services.dc_regions`
+- `seaf.company.ta.services.dc_azs`
+- `seaf.company.ta.services.dcs`
+- `seaf.company.ta.services.dc_offices`
+- `seaf.company.ta.services.network_segments`
+- `seaf.company.ta.services.networks`
+- `seaf.company.ta.services.kbs`
+- `seaf.company.ta.services.compute_services`
+- `seaf.company.ta.services.k8s`
+- `seaf.company.ta.services.cluster_virtualizations`
+- `seaf.company.ta.services.monitorings`
+- `seaf.company.ta.services.backups`
+- `seaf.company.ta.components.networks`
 
-## Зависимости
+## Команды запуска
+
+Все команды запускать из папки `seaf2xlsx/`.
+
+### 1) YAML -> XLSX
+
 ```bash
-pip install pyyaml pandas openpyxl
+python -X utf8 yaml_to_xlsx.py --config seaf2_config_yaml_to_xlsx.yaml
+```
+
+Результат пишется в `output_xlsx/`:
+- `regions_az_dc_offices.xlsx`
+- `segments_nets_netdevices.xlsx`
+- `kb_services.xlsx`
+- `tech_services.xlsx`
+- `components.xlsx`
+- `links.xlsx`
+
+### 2) XLSX -> YAML
+
+```bash
+python -X utf8 xlsx_to_yaml.py --config seaf2_config_xlsx_to_yaml.yaml --force
+```
+
+Результат пишется в `output_seaf2/`:
+- доменные YAML-файлы (`dc.yaml`, `network_segment.yaml`, `compute_service.yaml`, `k8s.yaml`, ...)
+- `root.yaml` (список импортов)
+- `seaf_full.yaml` (объединенный файл для последующей генерации drawio)
+
+## Roundtrip (пример)
+
+Полный прогон:
+
+```bash
+python -X utf8 yaml_to_xlsx.py --config seaf2_config_yaml_to_xlsx.yaml
+python -X utf8 xlsx_to_yaml.py --config seaf2_config_xlsx_to_yaml.yaml --force
+```
+
+Пример ожидаемого фрагмента итогового отчета `xlsx_to_yaml.py`:
+
+```text
+--- Conversion Summary ---
+  - backups                   | Source: 1     | Dest: 1     | OK
+  - cluster_virtualizations   | Source: 3     | Dest: 3     | OK
+  - components.networks       | Source: 53    | Dest: 53    | OK
+  - compute_services          | Source: 32    | Dest: 32    | OK
+  - dc_azs                    | Source: 2     | Dest: 2     | OK
+  - dc_offices                | Source: 1     | Dest: 1     | OK
+  - dc_regions                | Source: 1     | Dest: 1     | OK
+  - dcs                       | Source: 2     | Dest: 2     | OK
+  - k8s                       | Source: 3     | Dest: 3     | OK
+  - kbs                       | Source: 26    | Dest: 26    | OK
+  - monitorings               | Source: 2     | Dest: 2     | OK
+  - network_segments          | Source: 24    | Dest: 24    | OK
+  - networks                  | Source: 53    | Dest: 53    | OK
+  - softwares                 | Source: 6     | Dest: 6     | OK
+  - storages                  | Source: 3     | Dest: 3     | OK
+```
+
+## Ожидаемое поведение
+
+- `Deployment` (k8s deployments) намеренно не участвует в roundtrip-конвертации.
+- `K8s Cluster`, `Cluster Virtualization`, `Monitoring`, `Backup` сохраняют свои типы и не деградируют в `compute_services`.
+- В обработке сегментов и сетей используется верхний уровень полей (`location`, `zone`, `provider`) без `sber.*`.
+
+## Проверка генерации drawio после roundtrip
+
+Из корня репозитория:
+
+```bash
+python -X utf8 seaf2drawio.py -s seaf2xlsx/output_seaf2/seaf_full.yaml -d result/final_fixed.drawio
+```
+
+Ожидаемый результат в логе:
+
+```text
+Result: GENERATION MATCHES YAML (by schema)
 ```
