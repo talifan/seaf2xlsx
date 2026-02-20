@@ -45,33 +45,32 @@ def derive_location_from_network(net_id):
 
 # Mapping for count and identification
 ENTITY_MAP = {
-    'dc_region': ['seaf.ta.services.dc_region'],
-    'dc_az': ['seaf.ta.services.dc_az'],
-    'dc': ['seaf.ta.services.dc'],
-    'office': ['seaf.ta.services.office'],
-    'network_segment': ['seaf.ta.services.network_segment'],
-    'network': ['seaf.ta.services.network'],
-    'kb': ['seaf.ta.services.kb'],
-    'components.network': ['seaf.ta.components.network'],
-    'compute_service': ['seaf.ta.services.compute_service'],
-    'cluster': ['seaf.ta.services.cluster'],
-    'monitoring': ['seaf.ta.services.monitoring'],
-    'backup': ['seaf.ta.services.backup'],
-    'software': ['seaf.ta.services.software'],
-    'storage': ['seaf.ta.services.storage'],
-    'cluster_virtualization': ['seaf.ta.services.cluster_virtualization'],
-    'k8s': ['seaf.ta.services.k8s'],
-    'k8s_deployment': ['seaf.ta.services.k8s_deployment'],
-    'logical_link': ['seaf.ta.services.logical_link'],
-    'network_link': ['seaf.ta.services.network_link'],
-    'stand': ['seaf.ta.services.stand'],
-    'environment': ['seaf.ta.services.environment'],
-    'server': ['seaf.ta.components.server'],
-    'hw_storage': ['seaf.ta.components.hw_storage'],
-    'user_device': ['seaf.ta.components.user_device'],
-    'k8s_node': ['seaf.ta.components.k8s_node'],
-    'k8s_namespace': ['seaf.ta.components.k8s_namespace'],
-    'k8s_hpa': ['seaf.ta.components.k8s_hpa']
+    'dc_region': ['seaf.company.ta.services.dc_regions'],
+    'dc_az': ['seaf.company.ta.services.dc_azs'],
+    'dc': ['seaf.company.ta.services.dcs'],
+    'office': ['seaf.company.ta.services.dc_offices', 'seaf.company.ta.services.offices'],
+    'network_segment': ['seaf.company.ta.services.network_segments'],
+    'network': ['seaf.company.ta.services.networks'],
+    'kb': ['seaf.company.ta.services.kbs'],
+    'components.network': ['seaf.company.ta.components.networks'],
+    'compute_service': ['seaf.company.ta.services.compute_services'],
+    'cluster': ['seaf.company.ta.services.clusters'],
+    'monitoring': ['seaf.company.ta.services.monitorings'],
+    'backup': ['seaf.company.ta.services.backups'],
+    'software': ['seaf.company.ta.services.softwares'],
+    'storage': ['seaf.company.ta.services.storages'],
+    'cluster_virtualization': ['seaf.company.ta.services.cluster_virtualizations'],
+    'k8s': ['seaf.company.ta.services.k8s'],
+    'logical_link': ['seaf.company.ta.services.logical_links'],
+    'network_link': ['seaf.company.ta.services.network_links'],
+    'stand': ['seaf.company.ta.services.stands'],
+    'environment': ['seaf.company.ta.services.environments'],
+    'server': ['seaf.company.ta.components.servers'],
+    'hw_storage': ['seaf.company.ta.components.hw_storages'],
+    'user_device': ['seaf.company.ta.components.user_devices'],
+    'k8s_node': ['seaf.company.ta.components.k8s_nodes'],
+    'k8s_namespace': ['seaf.company.ta.components.k8s_namespaces'],
+    'k8s_hpa': ['seaf.company.ta.components.k8s_hpas']
 }
 
 def count_entities_in_yaml_dir(yaml_dir: Path) -> Dict[str, int]:
@@ -103,8 +102,10 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
                     df = xls.parse(sn).dropna(how='all')
                     ename = sheet_map[sn]
                     if ename == 'tech_services':
-                        cmap = {'Compute Service': 'compute_service', 'Cluster': 'cluster', 'Monitoring': 'monitoring', 'Backup': 'backup', 'Software': 'software', 'Storage': 'storage', 'Cluster Virtualization': 'cluster_virtualization', 'K8s Cluster': 'k8s', 'Deployment': 'k8s_deployment'}
+                        cmap = {'Compute Service': 'compute_service', 'Cluster': 'cluster', 'Monitoring': 'monitoring', 'Backup': 'backup', 'Software': 'software', 'Storage': 'storage', 'Cluster Virtualization': 'cluster_virtualization', 'K8s Cluster': 'k8s'}
                         for _, row in df.iterrows():
+                            if row.get('Класс') == 'Deployment':
+                                continue
                             etype = cmap.get(row.get('Класс'), 'compute_service')
                             counts[etype] = counts.get(etype, 0) + 1
                     elif ename == 'components':
@@ -131,8 +132,15 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
     return counts
 
 def save_regions_az_dc_offices(ydir: Path, writer: pd.ExcelWriter):
-    for fn, key, sn in [('dc_region.yaml', 'seaf.ta.services.dc_region', 'Регионы'), ('dc_az.yaml', 'seaf.ta.services.dc_az', 'AZ'), ('dc.yaml', 'seaf.ta.services.dc', 'DC'), ('office.yaml', 'seaf.ta.services.office', 'Офисы')]:
+    for fn, key, sn in [
+        ('dc_region.yaml', 'seaf.company.ta.services.dc_regions', 'Регионы'), 
+        ('dc_az.yaml', 'seaf.company.ta.services.dc_azs', 'AZ'), 
+        ('dc.yaml', 'seaf.company.ta.services.dcs', 'DC'), 
+        ('dc_office.yaml', 'seaf.company.ta.services.dc_offices', 'Офисы')
+    ]:
         d = read_yaml(ydir / fn).get(key, {})
+        if not d and fn == 'dc_office.yaml': # Try office.yaml if dc_office not found or empty
+             d = read_yaml(ydir / 'office.yaml').get('seaf.company.ta.services.offices', {})
         if d:
             rows = []
             for i, p in d.items():
@@ -143,16 +151,17 @@ def save_regions_az_dc_offices(ydir: Path, writer: pd.ExcelWriter):
             if rows: pd.DataFrame(rows).to_excel(writer, sheet_name=sn, index=False)
 
 def save_segments_nets_devices(ydir: Path, writer: pd.ExcelWriter):
-    d = read_yaml(ydir / 'network_segment.yaml').get('seaf.ta.services.network_segment', {})
-    if d: pd.DataFrame([{'ID сетевые сегмента/зоны': i, 'Наименование': p.get('title'), 'Описание': p.get('description'), 'Расположение': (p.get('sber') or {}).get('location'), 'Зона': (p.get('sber') or {}).get('zone')} for i, p in d.items()]).to_excel(writer, sheet_name='Сегменты', index=False)
+    d = read_yaml(ydir / 'network_segment.yaml').get('seaf.company.ta.services.network_segments', {})
+    if d: pd.DataFrame([{'ID сетевые сегмента/зоны': i, 'Наименование': p.get('title'), 'Описание': p.get('description'), 'Расположение': p.get('location'), 'Зона': p.get('zone')} for i, p in d.items()]).to_excel(writer, sheet_name='Сегменты', index=False)
     nets = {}
-    for p in sorted(ydir.glob('networks_*.yaml')): nets.update(read_yaml(p).get('seaf.ta.services.network', {}))
+    for p in sorted(ydir.glob('network*.yaml')): 
+        nets.update(read_yaml(p).get('seaf.company.ta.services.networks', {}))
     if nets:
-        rows = [{'ID Network': i, 'Наименование': p.get('title'), 'Описание': p.get('description'), 'Тип сети': p.get('type'), 'VLAN': p.get('vlan'), 'VRF  ': p.get('VRF'), 'Провайдер': p.get('provider') or (p.get('sber') or {}).get('provider'), 'Тип сети (проводная, беспроводная)': p.get('lan_type'), 'Адрес сети': p.get('ipnetwork'), 'WAN Адрес': p.get('wan_ip'), 'Расположение': format_list(p.get('location')), 'Сетевой сегмент/зона(ID)': format_list(p.get('segment'))} for i, p in nets.items()]
+        rows = [{'ID Network': i, 'Наименование': p.get('title'), 'Описание': p.get('description'), 'Тип сети': p.get('type'), 'VLAN': p.get('vlan'), 'VRF  ': p.get('VRF'), 'Провайдер': p.get('provider'), 'Тип сети (проводная, беспроводная)': p.get('lan_type'), 'Адрес сети': p.get('ipnetwork'), 'WAN Адрес': p.get('wan_ip'), 'Расположение': format_list(p.get('location')), 'Сетевой сегмент/зона': format_list(p.get('segment'))} for i, p in nets.items()]
         pd.DataFrame(rows).to_excel(writer, sheet_name='Сети', index=False)
 
 def save_kb_services(ydir: Path, writer: pd.ExcelWriter):
-    d = read_yaml(ydir / 'kb.yaml').get('seaf.ta.services.kb', {})
+    d = read_yaml(ydir / 'kb.yaml').get('seaf.company.ta.services.kbs', {})
     if not d: return
     rows = [{'ID КБ сервиса': i, 'Tag': p.get('tag'), 'Описание': p.get('description'), 'Технология': p.get('technology'), 'Название ПО': p.get('software_name'), 'Статус': p.get('status'), 'Подключенные сети': format_list(p.get('network_connection'))} for i, p in d.items()]
     pd.DataFrame(rows).to_excel(writer, sheet_name='Сервисы КБ', index=False)
@@ -160,13 +169,13 @@ def save_kb_services(ydir: Path, writer: pd.ExcelWriter):
 def save_components(ydir: Path, writer: pd.ExcelWriter):
     rows = []
     cmap = {
-        'seaf.ta.components.server': 'Server',
-        'seaf.ta.components.hw_storage': 'HW Storage',
-        'seaf.ta.components.user_device': 'User Device',
-        'seaf.ta.components.k8s_node': 'K8s Node',
-        'seaf.ta.components.k8s_namespace': 'K8s Namespace',
-        'seaf.ta.components.k8s_hpa': 'K8s HPA',
-        'seaf.ta.components.network': 'Network Device'
+        'seaf.company.ta.components.servers': 'Server',
+        'seaf.company.ta.components.hw_storages': 'HW Storage',
+        'seaf.company.ta.components.user_devices': 'User Device',
+        'seaf.company.ta.components.k8s_nodes': 'K8s Node',
+        'seaf.company.ta.components.k8s_namespaces': 'K8s Namespace',
+        'seaf.company.ta.components.k8s_hpas': 'K8s HPA',
+        'seaf.company.ta.components.networks': 'Network Device'
     }
     for p in sorted(ydir.glob('**/*.yaml')):
         data = read_yaml(p)
@@ -179,7 +188,7 @@ def save_components(ydir: Path, writer: pd.ExcelWriter):
 
 def save_links(ydir: Path, writer: pd.ExcelWriter):
     rows = []
-    cmap = {'seaf.ta.services.logical_link': 'Logical Link', 'seaf.ta.services.network_link': 'Network Link'}
+    cmap = {'seaf.company.ta.services.logical_links': 'Logical Link', 'seaf.company.ta.services.network_links': 'Network Link'}
     for p in sorted(ydir.glob('**/*.yaml')):
         data = read_yaml(p)
         for rkey, ent in data.items():
@@ -191,15 +200,14 @@ def save_links(ydir: Path, writer: pd.ExcelWriter):
 def save_tech_services(ydir: Path, writer: pd.ExcelWriter):
     rows = []
     kmap = {
-        'seaf.ta.services.compute_service': 'Compute Service',
-        'seaf.ta.services.cluster': 'Cluster',
-        'seaf.ta.services.monitoring': 'Monitoring',
-        'seaf.ta.services.backup': 'Backup',
-        'seaf.ta.services.software': 'Software',
-        'seaf.ta.services.storage': 'Storage',
-        'seaf.ta.services.cluster_virtualization': 'Cluster Virtualization',
-        'seaf.ta.services.k8s': 'K8s Cluster',
-        'seaf.ta.services.k8s_deployment': 'Deployment'
+        'seaf.company.ta.services.compute_services': 'Compute Service',
+        'seaf.company.ta.services.clusters': 'Compute Service',
+        'seaf.company.ta.services.monitorings': 'Monitoring',
+        'seaf.company.ta.services.backups': 'Backup',
+        'seaf.company.ta.services.softwares': 'Software',
+        'seaf.company.ta.services.storages': 'Storage',
+        'seaf.company.ta.services.cluster_virtualizations': 'Cluster Virtualization',
+        'seaf.company.ta.services.k8s': 'K8s Cluster'
     }
     for p in sorted(ydir.glob('**/*.yaml')):
         data = read_yaml(p)

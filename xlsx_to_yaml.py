@@ -53,6 +53,10 @@ SCHEMA_DEF = {
     'Компоненты': {
         'mandatory': ['Идентификатор', 'Класс'],
         'optional': ['Наименование', 'Описание', 'Тип', 'Локация', 'Сети', 'Сегмент']
+    },
+    'Связи': {
+        'mandatory': ['Идентификатор', 'Класс'],
+        'optional': ['Описание', 'Источник', 'Приемник', 'Направление', 'Сети']
     }
 }
 
@@ -69,10 +73,10 @@ def log_debug(message):
     except Exception: pass
 
 SPECIAL_ENTITY_MAP = {
-    'Мониторинг': 'monitoring',
-    'Логгирование': 'monitoring',
-    'Резервное копирование': 'backup',
-    'Бекапирование и восстановление данных': 'backup'
+    'Мониторинг': 'monitorings',
+    'Логгирование': 'monitorings',
+    'Резервное копирование': 'backups',
+    'Бекапирование и восстановление данных': 'backups'
 }
 
 SVC_TYPE_MAP = {
@@ -282,7 +286,19 @@ def sanitize_for_yaml(value: Any) -> Any:
 
 def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
     counts = {}
-    sheet_map = {'Регионы': 'dc_region', 'AZ': 'dc_az', 'DC': 'dc', 'Офисы': 'office', 'Сегменты': 'network_segment', 'Сети': 'network', 'Сетевые устройства': 'components.network', 'Сервисы КБ': 'kb', 'Тех. сервисы': 'tech_services', 'Tech Services': 'tech_services'}
+    sheet_map = {
+        'Регионы': 'dc_regions', 
+        'AZ': 'dc_azs', 
+        'DC': 'dcs', 
+        'Офисы': 'dc_offices', 
+        'Сегменты': 'network_segments', 
+        'Сети': 'networks', 
+        'Сетевые устройства': 'components.networks', 
+        'Компоненты': 'components',
+        'Сервисы КБ': 'kbs', 
+        'Тех. сервисы': 'tech_services', 
+        'Tech Services': 'tech_services'
+    }
     for file_path in xlsx_files:
         if not file_path.exists(): continue
         try:
@@ -296,18 +312,46 @@ def count_entities_in_xlsx(xlsx_files: List[Path]) -> Dict[str, int]:
                         for _, row in df.iterrows():
                             oid = id_clean(row.get('Идентификатор'))
                             if not oid: continue
-                            svc_raw, res_val, cls_val = ws_clean(row.get('Тип сервиса')) or ws_clean(row.get('Класс')), ws_clean(row.get('Тип резервирования')), ws_clean(row.get('Класс'))
-                            etype = 'compute_service'
-                            if svc_raw in SPECIAL_ENTITY_MAP: etype = SPECIAL_ENTITY_MAP[svc_raw]
-                            elif cls_val == 'Cluster' or (res_val and res_val.lower() in ['active-active', 'active-passive', 'n+1', 'да']): etype = 'cluster'
-                            elif cls_val == 'Software': etype = 'software'
-                            elif cls_val == 'Storage': etype = 'storage'
-                            elif cls_val == 'Monitoring': etype = 'monitoring'
-                            elif cls_val == 'Backup': etype = 'backup'
-                            elif cls_val == 'Compute Service': etype = 'compute_service'
+                            svc_raw = ws_clean(row.get('Тип сервиса'))
+                            cls_val = ws_clean(row.get('Класс'))
+                            res_val = ws_clean(row.get('Тип резервирования'))
+                            if cls_val == 'Deployment':
+                                continue
+                            if cls_val == 'K8s Cluster': etype = 'k8s'
+                            elif cls_val == 'Cluster Virtualization': etype = 'cluster_virtualizations'
+                            elif cls_val == 'Software': etype = 'softwares'
+                            elif cls_val == 'Storage': etype = 'storages'
+                            elif cls_val == 'Monitoring': etype = 'monitorings'
+                            elif cls_val == 'Backup': etype = 'backups'
+                            elif cls_val in ['Compute Service', 'Cluster'] or (res_val and res_val.lower() in ['active-active', 'active-passive', 'n+1', 'да']):
+                                etype = 'compute_services'
+                            elif svc_raw in SPECIAL_ENTITY_MAP:
+                                etype = SPECIAL_ENTITY_MAP[svc_raw]
+                            else:
+                                etype = 'compute_services'
                             typed_ids.setdefault(etype, set()).add(oid)
                         for etype, ids in typed_ids.items():
                             counts[etype] = counts.get(etype, 0) + len(ids)
+                    elif ename == 'components':
+                        typed_ids = {
+                            'components.networks': set(),
+                            'components.k8s_namespaces': set(),
+                            'components.k8s_hpas': set(),
+                        }
+                        for _, row in df.iterrows():
+                            oid = id_clean(row.get('Идентификатор'))
+                            if not oid:
+                                continue
+                            cls = ws_clean(row.get('Класс'))
+                            if cls == 'Network Device':
+                                typed_ids['components.networks'].add(oid)
+                            elif cls == 'K8s Namespace':
+                                typed_ids['components.k8s_namespaces'].add(oid)
+                            elif cls == 'K8s HPA':
+                                typed_ids['components.k8s_hpas'].add(oid)
+                        for etype, ids in typed_ids.items():
+                            if ids:
+                                counts[etype] = counts.get(etype, 0) + len(ids)
                     else: counts[ename] = counts.get(ename, 0) + len(df)
         except Exception: pass
     return counts
@@ -316,6 +360,8 @@ def count_entities_in_yaml_dir(yaml_dir: Path) -> Dict[str, int]:
     counts = {}
     if not yaml_dir.exists(): return counts
     for p in sorted(yaml_dir.glob('**/*.yaml')):
+        if p.name in ['root.yaml', 'seaf_full.yaml']:
+            continue
         try:
             with p.open('r', encoding='utf-8') as f:
                 data = yaml.safe_load(f)
@@ -336,7 +382,7 @@ def convert_regions_az_dc_offices(xls, out_dir: Path):
                 reg[rid] = {'description': ws_clean(row.get('Описание')), 'external_id': rid.split('.')[-1], 'title': ws_clean(row.get('Наименование'))}
                 VALIDATOR.register_id(rid, "Регионы")
                 VALIDATOR.register_location(rid)
-    if reg: write_yaml(out_dir / 'dc_region.yaml', {'seaf.ta.services.dc_region': reg})
+    if reg: write_yaml(out_dir / 'dc_region.yaml', {'seaf.company.ta.services.dc_regions': reg})
     
     if 'AZ' in xls.sheet_names:
         for idx, row in non_empty_rows(xls.parse('AZ')).iterrows():
@@ -345,7 +391,7 @@ def convert_regions_az_dc_offices(xls, out_dir: Path):
                 azs[aid] = {'description': ws_clean(row.get('Описание')), 'external_id': aid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование')), 'vendor': ws_clean(row.get('Поставщик'))}
                 VALIDATOR.register_id(aid, "AZ")
                 VALIDATOR.register_location(aid)
-    if azs: write_yaml(out_dir / 'dc_az.yaml', {'seaf.ta.services.dc_az': azs})
+    if azs: write_yaml(out_dir / 'dc_az.yaml', {'seaf.company.ta.services.dc_azs': azs})
     
     if 'DC' in xls.sheet_names:
         for idx, row in non_empty_rows(xls.parse('DC')).iterrows():
@@ -354,7 +400,7 @@ def convert_regions_az_dc_offices(xls, out_dir: Path):
                 dcs[did] = {'address': ws_clean(row.get('Адрес')), 'availabilityzone': id_clean(row.get('AZ')), 'description': ws_clean(row.get('Описание')), 'external_id': did.split('.')[-1], 'ownership': ws_clean(row.get('Форма владения')), 'rack_qty': ws_clean(row.get('Кол-во стоек')), 'tier': ws_clean(row.get('Tier')), 'title': ws_clean(row.get('Наименование')), 'type': ws_clean(row.get('Тип')), 'vendor': ws_clean(row.get('Поставщик'))}
                 VALIDATOR.register_id(did, "DC")
                 VALIDATOR.register_location(did)
-    if dcs: write_yaml(out_dir / 'dc.yaml', {'seaf.ta.services.dc': dcs})
+    if dcs: write_yaml(out_dir / 'dc.yaml', {'seaf.company.ta.services.dcs': dcs})
     
     if 'Офисы' in xls.sheet_names:
         for idx, row in non_empty_rows(xls.parse('Офисы')).iterrows():
@@ -363,7 +409,7 @@ def convert_regions_az_dc_offices(xls, out_dir: Path):
                 off[oid] = {'address': ws_clean(row.get('Адрес')), 'description': ws_clean(row.get('Описание')), 'external_id': oid.split('.')[-1], 'region': id_clean(row.get('Регион')), 'title': ws_clean(row.get('Наименование'))}
                 VALIDATOR.register_id(oid, "Офисы")
                 VALIDATOR.register_location(oid)
-    if off: write_yaml(out_dir / 'office.yaml', {'seaf.ta.services.office': off})
+    if off: write_yaml(out_dir / 'dc_office.yaml', {'seaf.company.ta.services.dc_offices': off})
     return (len(reg)+len(azs)+len(dcs)+len(off)) > 0
 
 def convert_segments_nets_devices(xls, out_dir: Path):
@@ -373,9 +419,15 @@ def convert_segments_nets_devices(xls, out_dir: Path):
         for _, r in non_empty_rows(xls.parse('Сегменты')).iterrows():
             sid = id_clean(r.get('ID сетевые сегмента/зоны'))
             if sid:
-                segments[sid] = {'title': ws_clean(r.get('Наименование')), 'description': ws_clean(r.get('Описание')), 'sber': {'location': parse_locations(r.get('Расположение'))[0] if parse_locations(r.get('Расположение')) else None, 'zone': ws_clean(r.get('Зона'))}}
+                parsed_locs = parse_locations(r.get('Расположение'))
+                segments[sid] = {
+                    'title': ws_clean(r.get('Наименование')),
+                    'description': ws_clean(r.get('Описание')),
+                    'location': parsed_locs[0] if parsed_locs else None,
+                    'zone': ws_clean(r.get('Зона'))
+                }
                 VALIDATOR.register_id(sid, "Сегменты")
-        if segments: write_yaml(out_dir / 'network_segment.yaml', {'seaf.ta.services.network_segment': segments}); res = True
+        if segments: write_yaml(out_dir / 'network_segment.yaml', {'seaf.company.ta.services.network_segments': segments}); res = True
     
     if 'Сети' in xls.sheet_names:
         nets = {}
@@ -408,8 +460,8 @@ def convert_segments_nets_devices(xls, out_dir: Path):
                         if m := re.search(rf'{re.escape(prefix)}\.dc\.(\d+)', loc): token = f'dc{m.group(1)}'
                         elif m := re.search(rf'{re.escape(prefix)}\.office\.(.+)', loc): token = f'office_{m.group(1)}'
                     per_loc.setdefault(token, {})[nid] = entry
-            for t, s in per_loc.items(): write_yaml(out_dir / f'networks_{t}.yaml', {'seaf.ta.services.network': s})
-            if misc: write_yaml(out_dir / 'networks_misc.yaml', {'seaf.ta.services.network': misc})
+            for t, s in per_loc.items(): write_yaml(out_dir / f'networks_{t}.yaml', {'seaf.company.ta.services.networks': s})
+            if misc: write_yaml(out_dir / 'networks_misc.yaml', {'seaf.company.ta.services.networks': misc})
     
     sheet = next((s for s in xls.sheet_names if s in ['Сетевые устройства', '??????? ??????????']), None)
     devs = {}
@@ -434,9 +486,9 @@ def convert_segments_nets_devices(xls, out_dir: Path):
     sheet_comp = next((s for s in xls.sheet_names if s == 'Компоненты'), None)
     if sheet_comp:
         comp_config = {
-            'Network Device': ('components_network.yaml', 'seaf.ta.components.network'),
-            'K8s Namespace': ('k8s_namespace.yaml', 'seaf.ta.components.k8s_namespace'),
-            'K8s HPA': ('k8s_hpa.yaml', 'seaf.ta.components.k8s_hpa')
+            'Network Device': ('components_network.yaml', 'seaf.company.ta.components.networks'),
+            'K8s Namespace': ('k8s_namespace.yaml', 'seaf.company.ta.components.k8s_namespaces'),
+            'K8s HPA': ('k8s_hpa.yaml', 'seaf.company.ta.components.k8s_hpas')
         }
         collected = {k: {} for k in comp_config}
 
@@ -475,7 +527,7 @@ def convert_segments_nets_devices(xls, out_dir: Path):
                 write_yaml(out_dir / fn, {ns: data})
                 res = True
 
-    if devs: write_yaml(out_dir / 'components_network.yaml', {'seaf.ta.components.network': devs}); res = True
+    if devs: write_yaml(out_dir / 'components_network.yaml', {'seaf.company.ta.components.networks': devs}); res = True
     return res
 
 def convert_kb_services(xls, out_dir: Path):
@@ -491,13 +543,21 @@ def convert_kb_services(xls, out_dir: Path):
         
         title = ws_clean(r.get('Название сервиса')) or ws_clean(r.get('Название')) or ws_clean(r.get('Технология')) or sid
         kb[sid] = {'title': title, 'description': ws_clean(r.get('Описание')), 'status': ws_clean(r.get('Статус')), 'technology': ws_clean(r.get('Технология')), 'software_name': ws_clean(r.get('Название ПО')), 'tag': ws_clean(r.get('Tag')), 'network_connection': conn_nets}
-    if kb: write_yaml(out_dir / 'kb.yaml', {'seaf.ta.services.kb': kb}); return True
+    if kb: write_yaml(out_dir / 'kb.yaml', {'seaf.company.ta.services.kbs': kb}); return True
     return False
 
 def convert_tech_services(xls, out_dir: Path):
     sheet = next((s for s in xls.sheet_names if s in ['Тех. сервисы', 'Tech Services']), None)
     if not sheet: return False
-    out_data = {'compute_service': {}, 'cluster': {}, 'monitoring': {}, 'backup': {}, 'software': {}, 'storage': {}}
+    out_data = {
+        'compute_services': {},
+        'k8s': {},
+        'cluster_virtualizations': {},
+        'monitorings': {},
+        'backups': {},
+        'softwares': {},
+        'storages': {}
+    }
     
     # Track unique IDs to avoid duplication if the same ID appears multiple times in Excel (e.g. multi-location)
     for _, row in non_empty_rows(xls.parse(sheet)).iterrows():
@@ -510,7 +570,9 @@ def convert_tech_services(xls, out_dir: Path):
         # We accept multiple rows for same ID in Tech Services as "partial definitions" to be merged.
         # So we skip duplicate ID check within this loop or handle it gracefully.
         
-        svc_raw, res_val, cls_val = ws_clean(row.get('Тип сервиса')) or ws_clean(row.get('Класс')), ws_clean(row.get('Тип резервирования')), ws_clean(row.get('Класс'))
+        svc_raw = ws_clean(row.get('Тип сервиса'))
+        cls_val = ws_clean(row.get('Класс'))
+        res_val = ws_clean(row.get('Тип резервирования'))
         nets = parse_multiline_ids(row.get('Подключен к сети') or row.get('Подключен к  сети'))
         locs = parse_locations(row.get('ЦОД'))
         if not locs:
@@ -520,14 +582,28 @@ def convert_tech_services(xls, out_dir: Path):
         
         VALIDATOR.check_ref_network(nets, oid)
         
-        etype = 'compute_service'
-        if svc_raw in SPECIAL_ENTITY_MAP: etype = SPECIAL_ENTITY_MAP[svc_raw]
-        elif cls_val == 'Cluster' or (res_val and res_val.lower() in ['active-active','active-passive','n+1','да']): etype = 'cluster'
-        elif cls_val == 'Software': etype = 'software'
-        elif cls_val == 'Storage': etype = 'storage'
-        elif cls_val == 'Monitoring': etype = 'monitoring'
-        elif cls_val == 'Backup': etype = 'backup'
-        elif cls_val == 'Compute Service': etype = 'compute_service'
+        # Deployment objects should not be converted back (not rendered)
+        if cls_val == 'Deployment':
+            continue
+
+        if cls_val == 'K8s Cluster':
+            etype = 'k8s'
+        elif cls_val == 'Cluster Virtualization':
+            etype = 'cluster_virtualizations'
+        elif cls_val == 'Software':
+            etype = 'softwares'
+        elif cls_val == 'Storage':
+            etype = 'storages'
+        elif cls_val == 'Monitoring':
+            etype = 'monitorings'
+        elif cls_val == 'Backup':
+            etype = 'backups'
+        elif cls_val in ['Compute Service', 'Cluster'] or (res_val and res_val.lower() in ['active-active','active-passive','n+1','да']):
+            etype = 'compute_services'
+        elif svc_raw in SPECIAL_ENTITY_MAP:
+            etype = SPECIAL_ENTITY_MAP[svc_raw]
+        else:
+            etype = 'compute_services'
         
         if oid in out_data[etype]:
             # Merge locations and networks for duplicate IDs (multi-page/multi-location export)
@@ -540,21 +616,24 @@ def convert_tech_services(xls, out_dir: Path):
         VALIDATOR.register_id(oid, "Тех. сервисы")
 
         obj = {'title': ws_clean(row.get('Наименование')), 'description': ws_clean(row.get('Описание')), 'location': locs, 'network_connection': nets, 'availabilityzone': []}
-        if etype in ['compute_service', 'cluster']: obj['service_type'] = normalize_svc_type(svc_raw)
-        if etype == 'cluster': obj['reservation_type'] = res_val
-        elif etype == 'monitoring': obj.update({'role':['Monitoring'], 'ha': res_val is not None, 'monitored_services':[]})
-        elif etype == 'backup': obj.update({'path':'/', 'backed_up_services':[]})
-        elif etype == 'software': pass
-        elif etype == 'storage': pass
+        if etype == 'compute_services':
+            obj['service_type'] = normalize_svc_type(svc_raw)
+            if res_val:
+                obj['reservation_type'] = res_val
+        elif etype == 'monitorings': obj.update({'role':['Monitoring'], 'ha': res_val is not None, 'monitored_services':[]})
+        elif etype == 'backups': obj.update({'path':'/', 'backed_up_services':[]})
+        elif etype == 'softwares': pass
+        elif etype == 'storages': pass
         out_data[etype][oid] = obj
     
     emap = {
-        'compute_service': ('compute_service.yaml', 'seaf.ta.services.compute_service'),
-        'cluster': ('cluster.yaml', 'seaf.ta.services.cluster'),
-        'monitoring': ('monitoring.yaml', 'seaf.ta.services.monitoring'),
-        'backup': ('backup.yaml', 'seaf.ta.services.backup'),
-        'software': ('software.yaml', 'seaf.ta.services.software'),
-        'storage': ('storage.yaml', 'seaf.ta.services.storage')
+        'compute_services': ('compute_service.yaml', 'seaf.company.ta.services.compute_services'),
+        'k8s': ('k8s.yaml', 'seaf.company.ta.services.k8s'),
+        'cluster_virtualizations': ('cluster_virtualization.yaml', 'seaf.company.ta.services.cluster_virtualizations'),
+        'monitorings': ('monitoring.yaml', 'seaf.company.ta.services.monitorings'),
+        'backups': ('backup.yaml', 'seaf.company.ta.services.backups'),
+        'softwares': ('software.yaml', 'seaf.company.ta.services.softwares'),
+        'storages': ('storage.yaml', 'seaf.company.ta.services.storages')
     }
     found = False
     for k, (fn, root) in emap.items():
@@ -605,7 +684,7 @@ def main():
                 if any(s in xls.sheet_names for s in ['Регионы','AZ','DC','Офисы']): 
                     if convert_regions_az_dc_offices(xls, out_dir): processed = True
                 
-                if any(s in xls.sheet_names for s in ['Сегменты','Сети','Сетевые устройства']): 
+                if any(s in xls.sheet_names for s in ['Сегменты','Сети','Сетевые устройства','Компоненты']): 
                     if convert_segments_nets_devices(xls, out_dir): processed = True
                 
                 if 'Сервисы КБ' in xls.sheet_names: 
@@ -622,6 +701,27 @@ def main():
         
         imports = [p.name for p in sorted(out_dir.glob('*.yaml')) if p.name != 'root.yaml']
         if imports: write_yaml(out_dir / 'root.yaml', {'imports': imports})
+
+        # Build merged file for seaf2drawio input
+        full_data = {}
+        for p in sorted(out_dir.glob('*.yaml')):
+            if p.name in ['root.yaml', 'seaf_full.yaml']:
+                continue
+            try:
+                with p.open('r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f) or {}
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if key not in full_data:
+                            full_data[key] = value
+                        elif isinstance(full_data[key], dict) and isinstance(value, dict):
+                            full_data[key].update(value)
+            except Exception:
+                pass
+
+        if full_data:
+            write_yaml(out_dir / 'seaf_full.yaml', full_data)
+
         dst_counts = count_entities_in_yaml_dir(out_dir)
         print("\n--- Conversion Summary ---")
         for k in sorted(list(set(src_counts.keys()) | set(dst_counts.keys()))):
